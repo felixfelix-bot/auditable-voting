@@ -18,6 +18,7 @@ import {
   type QuestionnaireStateEvent,
   type QuestionnaireStateValue,
   type QuestionnaireVoterGroup,
+  type QuestionCondition,
 } from "./questionnaireProtocol";
 import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
@@ -364,6 +365,49 @@ function createFreeTextQuestion(questionId: string, prompt = "", required = fals
     maxLength: 500,
     encryptResponses: false,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Conditional question (showIf) helpers                               */
+
+/**
+ * Build a label for a question suitable for display in the dependency dropdown.
+ * Uses the prompt if available, otherwise falls back to the questionId.
+ */
+function questionDependencyLabel(question: QuestionnaireQuestionDraft): string {
+  const prompt = question.prompt.trim();
+  return prompt || question.questionId;
+}
+
+/**
+ * Get the earlier questions (by index) that a question can depend on.
+ * A question cannot depend on itself or any later question.
+ */
+function earlierQuestions(questions: QuestionnaireQuestionDraft[], currentIndex: number): QuestionnaireQuestionDraft[] {
+  return questions.filter((_, index) => index < currentIndex);
+}
+
+/**
+ * Set or clear the showIf condition on a question draft.
+ * When condition is null, removes the showIf (sets to null).
+ */
+function withShowIf(question: QuestionnaireQuestionDraft, condition: QuestionCondition | null): QuestionnaireQuestionDraft {
+  return { ...question, showIf: condition };
+}
+
+/**
+ * When the dependency question changes, build a default requiredAnswer
+ * based on the dependency question's type.
+ */
+function defaultRequiredAnswerForQuestion(depQuestion: QuestionnaireQuestionDraft): QuestionCondition["requiredAnswer"] {
+  if (depQuestion.type === "yes_no") {
+    return { answerType: "yes_no", value: true };
+  }
+  if (depQuestion.type === "multiple_choice") {
+    return { answerType: "multiple_choice", selectedOptionIds: [] };
+  }
+  // For other types (rank, free_text), default to yes_no as a fallback
+  return { answerType: "yes_no", value: true };
 }
 
 function clearQuestionDraft(question: QuestionnaireQuestionDraft): QuestionnaireQuestionDraft {
@@ -5544,6 +5588,131 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   },
                 }}
               />
+              {/* Conditional display (showIf) configuration */}
+              <div className='simple-questionnaire-conditional-config'>
+                <UiSelect
+                  selectClassName='simple-voter-input simple-questionnaire-visibility-dropdown'
+                  aria-label={`Question ${index + 1} visibility`}
+                  value={question.showIf ? "conditional" : "always"}
+                  onChange={(event) => {
+                    const mode = event.target.value;
+                    if (mode === "always") {
+                      updateQuestion(index, (entry) => withShowIf(entry, null));
+                    } else {
+                      // Switching to conditional: pick first earlier question as default dependency
+                      const earlier = earlierQuestions(questions, index);
+                      if (earlier.length === 0) return;
+                      const firstDep = earlier[0];
+                      updateQuestion(index, (entry) => withShowIf(entry, {
+                        dependsOnQuestionId: firstDep.questionId,
+                        requiredAnswer: defaultRequiredAnswerForQuestion(firstDep),
+                      }));
+                    }
+                  }}
+                >
+                  <option value='always'>Show always</option>
+                  {earlierQuestions(questions, index).length > 0 ? (
+                    <option value='conditional'>Show if...</option>
+                  ) : null}
+                </UiSelect>
+                {question.showIf ? (
+                  <>
+                    <UiSelect
+                      selectClassName='simple-voter-input simple-questionnaire-dependency-dropdown'
+                      aria-label={`Question ${index + 1} depends on`}
+                      value={question.showIf.dependsOnQuestionId}
+                      onChange={(event) => {
+                        const depId = event.target.value;
+                        const depQuestion = questions.find((q) => q.questionId === depId);
+                        if (!depQuestion) return;
+                        updateQuestion(index, (entry) => withShowIf(entry, {
+                          dependsOnQuestionId: depId,
+                          requiredAnswer: defaultRequiredAnswerForQuestion(depQuestion),
+                        }));
+                      }}
+                    >
+                      {earlierQuestions(questions, index).map((dep) => (
+                        <option key={dep.questionId} value={dep.questionId}>
+                          {questionDependencyLabel(dep)}
+                        </option>
+                      ))}
+                    </UiSelect>
+                    {(() => {
+                      const depQuestion = questions.find((q) => q.questionId === question.showIf?.dependsOnQuestionId);
+                      if (!depQuestion) return null;
+                      const requiredAnswer = question.showIf.requiredAnswer;
+
+                      if (depQuestion.type === "yes_no") {
+                        const yesValue = requiredAnswer.answerType === "yes_no" ? requiredAnswer.value : true;
+                        return (
+                          <div className='simple-questionnaire-conditional-answer' role='radiogroup' aria-label={`Question ${index + 1} required answer`}>
+                            <label className='simple-questionnaire-conditional-radio'>
+                              <input
+                                type='radio'
+                                name={`question-${index}-conditional-answer`}
+                                aria-label={`Question ${index + 1} required answer Yes`}
+                                checked={yesValue === true}
+                                onChange={() => {
+                                  updateQuestion(index, (entry) => withShowIf(entry, {
+                                    dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                    requiredAnswer: { answerType: "yes_no", value: true },
+                                  }));
+                                }}
+                              />
+                              Yes
+                            </label>
+                            <label className='simple-questionnaire-conditional-radio'>
+                              <input
+                                type='radio'
+                                name={`question-${index}-conditional-answer`}
+                                aria-label={`Question ${index + 1} required answer No`}
+                                checked={yesValue === false}
+                                onChange={() => {
+                                  updateQuestion(index, (entry) => withShowIf(entry, {
+                                    dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                    requiredAnswer: { answerType: "yes_no", value: false },
+                                  }));
+                                }}
+                              />
+                              No
+                            </label>
+                          </div>
+                        );
+                      }
+
+                      if (depQuestion.type === "multiple_choice") {
+                        const selectedIds = requiredAnswer.answerType === "multiple_choice" ? requiredAnswer.selectedOptionIds : [];
+                        return (
+                          <div className='simple-questionnaire-conditional-options'>
+                            {depQuestion.options.map((opt) => (
+                              <label key={opt.optionId} className='simple-questionnaire-conditional-checkbox'>
+                                <input
+                                  type='checkbox'
+                                  aria-label={`Question ${index + 1} require ${opt.optionId}`}
+                                  checked={selectedIds.includes(opt.optionId)}
+                                  onChange={(event) => {
+                                    const next = event.target.checked
+                                      ? [...selectedIds, opt.optionId]
+                                      : selectedIds.filter((id) => id !== opt.optionId);
+                                    updateQuestion(index, (entry) => withShowIf(entry, {
+                                      dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                      requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: next },
+                                    }));
+                                  }}
+                                />
+                                {opt.label || opt.optionId}
+                              </label>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      // For rank / free_text dependencies, show a note
+                      return <p className='simple-questionnaire-conditional-note'>This question type does not support conditional display.</p>;
+                    })()}
+                  </>
+                ) : null}
+              </div>
               {question.type === "multiple_choice" ? (
                 <div className='simple-voter-field-stack simple-voter-field-stack-tight simple-questionnaire-option-stack'>
                   <div className='simple-questionnaire-options-editor'>
