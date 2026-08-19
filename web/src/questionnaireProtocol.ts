@@ -13,6 +13,21 @@ import {
   questionnaireRelaysForMetadata,
 } from "./questionnaireRelays";
 
+/**
+ * Conditional display: this question is only shown if the condition is met.
+ * The condition references an earlier question and the answer it must have.
+ */
+export type QuestionCondition = {
+  /** Question ID whose answer determines whether this question is shown. */
+  dependsOnQuestionId: string;
+  /** Required answer to trigger showing this question. */
+  requiredAnswer: QuestionConditionAnswer;
+};
+
+export type QuestionConditionAnswer =
+  | { answerType: "yes_no"; value: boolean }
+  | { answerType: "multiple_choice"; selectedOptionIds: string[] };
+
 export type QuestionnaireQuestionBase = {
   questionId: string;
   prompt: string;
@@ -21,6 +36,8 @@ export type QuestionnaireQuestionBase = {
   requiredScope?: string | null;
   /** Legacy alias for requiredScope. */
   ballotGroup?: string | null;
+  /** Conditional display: this question is only shown if the condition is met. */
+  showIf?: QuestionCondition | null;
 };
 
 export type QuestionnaireBallotCredentialMode = "questionnaire" | "per_question";
@@ -618,6 +635,38 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
         }
         if (question.encryptResponses !== undefined && typeof question.encryptResponses !== "boolean") {
           errors.push(`invalid_free_text_encrypt_responses:${question.questionId}`);
+        }
+      }
+
+      // Conditional display (showIf) validation
+      if (question.showIf !== undefined && question.showIf !== null) {
+        const condition = question.showIf;
+        const depId = condition.dependsOnQuestionId;
+        const depIndex = input.questions.findIndex((q) => q.questionId === depId);
+
+        if (depIndex === -1) {
+          errors.push(`show_if_dependency_not_found:${question.questionId}:${depId}`);
+        } else if (depIndex >= index) {
+          errors.push(`show_if_forward_reference:${question.questionId}:${depId}`);
+        } else {
+          const depQuestion = input.questions[depIndex];
+          const requiredAnswerType = condition.requiredAnswer.answerType;
+          if (requiredAnswerType !== depQuestion.type) {
+            errors.push(`show_if_answer_type_mismatch:${question.questionId}:${depId}`);
+          } else if (requiredAnswerType === "multiple_choice") {
+            const depOptions = depQuestion.type === "multiple_choice" ? depQuestion.options : [];
+            const validOptionIds = new Set(depOptions.map((opt) => opt.optionId));
+            const requiredOptionIds = condition.requiredAnswer.selectedOptionIds;
+            if (!Array.isArray(requiredOptionIds) || requiredOptionIds.length === 0) {
+              errors.push(`show_if_empty_option_ids:${question.questionId}:${depId}`);
+            } else {
+              for (const optId of requiredOptionIds) {
+                if (!validOptionIds.has(optId)) {
+                  errors.push(`show_if_invalid_option_id:${question.questionId}:${depId}:${optId}`);
+                }
+              }
+            }
+          }
         }
       }
     }
