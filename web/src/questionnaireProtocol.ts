@@ -13,6 +13,7 @@ import {
   questionnaireRelaysForMetadata,
 } from "./questionnaireRelays";
 import { shouldShowQuestion } from "./questionConditionEvaluator";
+import type { LocalisedText } from "./i18n/types";
 
 /**
  * Conditional display: this question is only shown if the condition is met.
@@ -29,9 +30,15 @@ export type QuestionConditionAnswer =
   | { answerType: "yes_no"; value: boolean }
   | { answerType: "multiple_choice"; selectedOptionIds: string[] };
 
+/**
+ * A text field that may be a plain string (backward compat) or a
+ * LocalisedText object with translations for multiple locales.
+ */
+export type LocalisableText = string | LocalisedText;
+
 export type QuestionnaireQuestionBase = {
   questionId: string;
-  prompt: string;
+  prompt: LocalisableText;
   required: boolean;
   ballotSlot?: QuestionnaireBallotSlot | null;
   requiredScope?: string | null;
@@ -125,7 +132,7 @@ export type QuestionnaireYesNoQuestion = QuestionnaireQuestionBase & {
 
 export type QuestionnaireMultipleChoiceOption = {
   optionId: string;
-  label: string;
+  label: LocalisableText;
 };
 
 export type QuestionnaireMultipleChoiceQuestion = QuestionnaireQuestionBase & {
@@ -159,8 +166,8 @@ export type QuestionnaireDefinition = {
   flowMode?: QuestionnaireFlowMode;
   responseMode: QuestionnaireResponseMode;
   questionnaireId: string;
-  title: string;
-  description?: string;
+  title: LocalisableText;
+  description?: LocalisableText;
   createdAt: number;
   openAt: number;
   closeAt: number;
@@ -391,6 +398,21 @@ function isNonEmpty(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Check whether a LocalisableText value has a non-empty `en` field.
+ * Plain strings always pass (they are implicitly English-only).
+ * LocalisedText objects must have a non-empty `en` string.
+ */
+function hasLocalisedEn(value: LocalisableText | null | undefined): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (value !== null && typeof value === "object" && typeof value.en === "string") {
+    return value.en.trim().length > 0;
+  }
+  return false;
+}
+
 export function questionnaireUsesPerQuestionCredentials(definition: Pick<QuestionnaireDefinition, "ballotCredentialMode"> | null | undefined) {
   return definition?.ballotCredentialMode === "per_question";
 }
@@ -525,6 +547,12 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
   if (!isNonEmpty(input.questionnaireId)) {
     errors.push("questionnaire_id_missing");
   }
+  if (!hasLocalisedEn(input.title)) {
+    errors.push("title_missing_en");
+  }
+  if (input.description !== undefined && !hasLocalisedEn(input.description)) {
+    errors.push("description_missing_en");
+  }
   if (!isNonEmpty(input.coordinatorPubkey)) {
     errors.push("coordinator_pubkey_missing");
   }
@@ -578,6 +606,9 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
         errors.push(`question_id_duplicate:${question.questionId}`);
       }
       questionIds.add(question.questionId);
+      if (!hasLocalisedEn(question.prompt)) {
+        errors.push(`prompt_missing_en:${question.questionId}`);
+      }
       if (question.requiredScope !== undefined && question.requiredScope !== null && !normaliseQuestionnaireScope(question.requiredScope)) {
         errors.push(`required_scope_invalid:${question.questionId}`);
       }
@@ -611,6 +642,9 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
           if (!isNonEmpty(option.optionId)) {
             errors.push(`option_id_missing:${question.questionId}`);
             continue;
+          }
+          if (!hasLocalisedEn(option.label)) {
+            errors.push(`option_label_missing_en:${question.questionId}:${option.optionId}`);
           }
           if (optionIds.has(option.optionId)) {
             errors.push(`option_id_duplicate:${question.questionId}:${option.optionId}`);
