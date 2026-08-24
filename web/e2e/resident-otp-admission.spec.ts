@@ -64,11 +64,14 @@ async function gotoResidentAdmission(page: Page): Promise<void> {
 
 /** Upload an in-memory CSV through the file input. */
 async function uploadCsv(page: Page, csv: string): Promise<void> {
-  await page.getByLabel("Residents CSV file").setInputFiles({
-    name: "residents.csv",
-    mimeType: "text/csv",
-    buffer: Buffer.from(csv, "utf8"),
-  });
+  await page
+    .locator("section[aria-label='Resident admission']")
+    .getByLabel("Residents CSV file")
+    .setInputFiles({
+      name: "residents.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(csv, "utf8"),
+    });
 }
 
 /** The roster table (only rendered when residents parsed successfully). */
