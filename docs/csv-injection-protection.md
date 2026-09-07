@@ -117,3 +117,34 @@ Run tests:
 ```bash
 cd web && npx vitest run src/residentRegister.test.ts
 ```
+
+## Election Roster & keyed commitment
+
+`web/src/electionRoster.ts` builds a per-election `Map<masterlist_no_hash, active>`
+from `parseMasterlistCsv()` output.  The key is a **keyed commitment**
+(HMAC-SHA256) of `masterlist_no` — never the plaintext:
+
+- `commitMasterlistNo(electionKey, masterlistNo)` — deterministic,
+  per-election commitment.  Because the election key is a secret, an
+  observer who reads the published roster sees only 64-char hex
+  commitments and cannot brute-force the low-entropy `masterlist_no`
+  values back from the hashes.
+- `buildElectionRoster(electionKey, entries)` — returns an `ElectionRoster`
+  that exposes `isEligible(masterlistNo)` and the eligible commitments
+  set.  Plaintext email/phone/dob/country are **dropped** at build time
+  and never appear on the roster object — they cannot leak into a
+  published event.
+
+The commitment domain (`"auditable-voting election roster v1"`) is
+versioned so a future normalisation change cannot collide with today's
+commitments.
+
+### Testing
+
+`electionRoster.test.ts` covers 19 tests including known-answer HMAC
+vectors, per-election disjointness, duplicate-detection, PII
+serialisation guards, and empty-key rejection.
+
+```bash
+cd web && npx vitest run src/electionRoster.test.ts
+```
