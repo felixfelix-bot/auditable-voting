@@ -102,3 +102,22 @@ key (e.g. `ML001`) — distinct from the integer `mastersListNumber` — and
 filters rows by `status=active` only.  Contact fields (email, phone, dob,
 country) are neutralised identically so exported rosters are safe to open in
 spreadsheet applications.
+
+### Keyed roster commitment (PII minimisation)
+
+Before a parsed masterlist can gate admission, `web/src/electionRoster.ts`
+turns the active entries into a per-election `Map<masterlist_no_hash, active>`:
+
+- `commitMasterlistNo(electionKey, masterlistNo)` computes an HMAC-SHA256
+  keyed commitment (64-char hex) of the masterlist_no.  The election key is a
+  secret, so the low-entropy `masterlist_no` cannot be recovered by
+  brute-forcing a published roster — the same "never store the raw secret"
+  discipline used by `hashOtp`'s salted hash.
+- `buildElectionRoster(electionKey, entries)` drops email/phone/dob/country
+  entirely and exposes `isEligible(masterlistNo)` plus the eligible commitment
+  set, so the roster can be serialised into a public stream without leaking
+  PII.
+
+This mirrors the OTP service's threat model (Section 2): raw identity and
+contact data are stored only as irreversible keyed commitments, never in
+plaintext.
