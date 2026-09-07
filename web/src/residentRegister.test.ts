@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseResidentCsv } from "./residentRegister";
+import { parseMasterlistCsv, parseResidentCsv } from "./residentRegister";
 
 describe("parseResidentCsv", () => {
   it("parses a valid CSV with header and returns correct entries", () => {
@@ -250,5 +250,153 @@ describe("parseResidentCsv", () => {
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors[0]).toMatch(/masters_list_number/i);
     });
+  });
+});
+
+describe("parseMasterlistCsv", () => {
+  it("accepts ML001-style string masterlist_no from the interop header", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,user1@example.com,9876543210,1990-01-15,USA,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].masterlistNo).toBe("ML001");
+    expect(result.entries[0].email).toBe("user1@example.com");
+    expect(result.entries[0].dob).toBe("1990-01-15");
+    expect(result.entries[0].country).toBe("USA");
+  });
+
+  it("filters out inactive rows — only active rows appear in entries", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,user1@example.com,9876543210,1990-01-15,USA,active\n" +
+      "2,ML002,user2@example.com,9123456780,1985-06-22,Canada,inactive\n" +
+      "3,ML003,user3@example.com,9988776655,1992-11-08,UK,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toEqual([]);
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries[0].masterlistNo).toBe("ML001");
+    expect(result.entries[1].masterlistNo).toBe("ML003");
+  });
+
+  it("reports an error if no rows are active (all inactive)", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,user1@example.com,,,USA,inactive\n" +
+      "2,ML002,user2@example.com,,,Canada,inactive";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.entries).toHaveLength(0);
+    expect(result.errors[0]).toMatch(/eligible|no active|empty/i);
+  });
+
+  it("reports an error for duplicate masterlist_no", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,alice@example.com,,,USA,active\n" +
+      "2,ML001,bob@example.com,,,Canada,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toHaveLength(2); // dup + no eligible after all-or-nothing
+    expect(result.errors[0]).toMatch(/duplicate/i);
+  });
+
+  it("reports an error for missing masterlist_no", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,,user1@example.com,,,USA,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("reports an error for unsafe masterlist_no charset", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML$001,user1@example.com,,,USA,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/masterlist_no/i);
+  });
+
+  it("reports an error for invalid status value", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,user1@example.com,,,USA,pending";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("reports an error for wrong header", () => {
+    const csv =
+      "bad,col,header,row,here,no,match\n" +
+      "1,ML001,user1@example.com,,,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/header/i);
+  });
+
+  it("accepts rows with omitted optional fields (email empty, phone empty, dob empty, country empty)", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,,,,,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].email).toBeUndefined();
+    expect(result.entries[0].phone).toBeUndefined();
+    expect(result.entries[0].dob).toBeUndefined();
+    expect(result.entries[0].country).toBeUndefined();
+  });
+
+  it("validates email format if present", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,not-an-email,,,USA,active";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/email/i);
+  });
+
+  it("handles RFC-4180 quoted field with doubled quotes (known answer)", () => {
+    const csv =
+      'id,masterlist_no,email,phone,dob,country,status\n' +
+      '1,ML001,user1@example.com,9876543210,1990-01-15,"He said ""hi""",active';
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].country).toBe('He said "hi"');
+  });
+
+  it("handles RFC-4180 quoted field with embedded comma", () => {
+    const csv =
+      'id,masterlist_no,email,phone,dob,country,status\n' +
+      '1,ML001,user1@example.com,9876543210,1990-01-15,"France, Metropolitan",active';
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].country).toBe("France, Metropolitan");
+  });
+
+  it("reports error for empty CSV", () => {
+    const result = parseMasterlistCsv("");
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.entries).toHaveLength(0);
+  });
+
+  it("reports error for header-only CSV", () => {
+    const csv = "id,masterlist_no,email,phone,dob,country,status";
+    const result = parseMasterlistCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/no data|empty/i);
+  });
+
+  // RED regression guard: existing parseResidentCsv still rejects interop header
+  it("existing parseResidentCsv rejects the masterlist interop header", () => {
+    const csv =
+      "id,masterlist_no,email,phone,dob,country,status\n" +
+      "1,ML001,user1@example.com,9876543210,1990-01-15,USA,active";
+    const result = parseResidentCsv(csv);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.residents).toHaveLength(0);
   });
 });
