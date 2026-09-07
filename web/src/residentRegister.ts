@@ -5,8 +5,22 @@ export interface ResidentEntry {
   name?: string;
 }
 
+export interface MasterlistEntry {
+  /** Interop eligibility key — stable string per human, e.g. "ML001". */
+  masterlistNo: string;
+  email?: string;
+  phone?: string;
+  dob?: string;
+  country?: string;
+}
+
 export interface ParseResult {
   residents: ResidentEntry[];
+  errors: string[];
+}
+
+export interface MasterlistParseResult {
+  entries: MasterlistEntry[];
   errors: string[];
 }
 
@@ -232,4 +246,180 @@ function isValidEmail(email: string): boolean {
   // RFC 5322 simplified: at least one char before @, at least one char after @ with a dot
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
+}
+
+// ---------- Interop masterlist mode ----------
+
+/**
+ * Expected header for the interop masterlist CSV format.
+ */
+const MASTERLIST_EXPECTED_HEADER = [
+  "id",
+  "masterlist_no",
+  "email",
+  "phone",
+  "dob",
+  "country",
+  "status",
+] as const;
+
+/**
+ * Safe charset for masterlist_no: alphanumeric + underscore + hyphen,
+ * 1–32 characters.  Intentionally excludes formula-prefix characters
+ * (=, +, -, @) so masterlist_no needs no CSV-injection neutralisation.
+ */
+const MASTERLIST_NO_RE = /^[A-Za-z0-9_-]{1,32}$/;
+
+/**
+ * Parse the interop masterlist CSV format emitted by the previous
+ * (centralized) solution.
+ *
+ * Expected header:
+ *   id,masterlist_no,email,phone,dob,country,status
+ *
+ * Key differences from the integer "masters_list_number" mode:
+ *   - {@link MasterlistEntry.masterlistNo} is a STRING (e.g. "ML001"),
+ *     NOT an integer.
+ *   - Only rows with status === "active" are included (inactive rows
+ *     are silently skipped).
+ *   - Email is optional (unlike the integer mode where it is required).
+ *   - Optional demographics: dob (ISO date) and country.
+ *
+ * This function is ADDITIVE — it does not alter the existing integer
+ * {@link parseResidentCsv} mode.  The two modes are selected by the
+ * caller based on the CSV header.
+ *
+ * @see /tmp/auditable-voting-csv-eligibility-spec.md
+ */
+export function parseMasterlistCsv(
+  csvContent: string,
+): MasterlistParseResult {
+  const errors: string[] = [];
+  const seenMasterlistNos = new Set<string>();
+
+  if (!csvContent || csvContent.trim().length === 0) {
+    errors.push("CSV content is empty");
+    return { entries: [], errors };
+  }
+
+  const lines = csvContent.split(/\r?\n/);
+  const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+
+  if (nonEmptyLines.length === 0) {
+    errors.push("CSV content is empty");
+    return { entries: [], errors };
+  }
+
+  // Validate header — must match the 7-column interop shape exactly
+  const headerFields = parseCsvLine(nonEmptyLines[0]).map((f) =>
+    f.trim().toLowerCase(),
+  );
+  if (headerFields.length !== MASTERLIST_EXPECTED_HEADER.length) {
+    errors.push(
+      `CSV must have exactly ${MASTERLIST_EXPECTED_HEADER.length} header columns: ${MASTERLIST_EXPECTED_HEADER.join(",")}`,
+    );
+    return { entries: [], errors };
+  }
+  for (let i = 0; i < MASTERLIST_EXPECTED_HEADER.length; i++) {
+    if (headerFields[i] !== MASTERLIST_EXPECTED_HEADER[i]) {
+      errors.push(
+        `CSV header column ${i + 1} must be "${MASTERLIST_EXPECTED_HEADER[i]}", got "${headerFields[i]}"`,
+      );
+    }
+  }
+  if (errors.length > 0) {
+    return { entries: [], errors };
+  }
+
+  if (nonEmptyLines.length === 1) {
+    errors.push("CSV has no data rows");
+    return { entries: [], errors };
+  }
+
+  const activeEntries: MasterlistEntry[] = [];
+  let anyActive = false;
+
+  for (let i = 1; i < nonEmptyLines.length; i++) {
+    const fields = parseCsvLine(nonEmptyLines[i]);
+
+    if (fields.length < MASTERLIST_EXPECTED_HEADER.length) {
+      errors.push(`Row ${i}: insufficient fields (got ${fields.length})`);
+      continue;
+    }
+
+    const idStr = fields[0]?.trim() ?? "";
+    const masterlistNo = fields[1]?.trim() ?? "";
+
+    // Neutralise formula injection on text fields BEFORE validation
+    const email = neutralizeCsvFormula(fields[2]?.trim() || undefined);
+    const phone = neutralizeCsvFormula(fields[3]?.trim() || undefined);
+    const dob = neutralizeCsvFormula(fields[4]?.trim() || undefined);
+    const country = neutralizeCsvFormula(fields[5]?.trim() || undefined);
+    const status = fields[6]?.trim().toLowerCase() ?? "";
+
+    // Validate id (required integer)
+    if (!idStr) {
+      errors.push(`Row ${i}: missing id`);
+      continue;
+    }
+    const idNum = Number(idStr);
+    if (!Number.isInteger(idNum) || idNum <= 0 || isNaN(idNum)) {
+      errors.push(
+        `Row ${i}: id must be a positive integer, got "${idStr}"`,
+      );
+      continue;
+    }
+
+    // Validate masterlist_no (required, safe charset)
+    if (!masterlistNo) {
+      errors.push(`Row ${i}: missing masterlist_no`);
+      continue;
+    }
+    if (!MASTERLIST_NO_RE.test(masterlistNo)) {
+      errors.push(
+        `Row ${i}: masterlist_no "${masterlistNo}" contains unsafe characters (allowed: A-Za-z0-9_- 1-32 chars)`,
+      );
+      continue;
+    }
+
+    // Validate uniqueness
+    if (seenMasterlistNos.has(masterlistNo)) {
+      errors.push(`Row ${i}: duplicate masterlist_no "${masterlistNo}"`);
+      continue;
+    }
+
+    // Validate status
+    if (status !== "active" && status !== "inactive") {
+      errors.push(
+        `Row ${i}: status must be "active" or "inactive", got "${status}"`,
+      );
+      continue;
+    }
+
+    // Validate email format if present
+    if (email && !isValidEmail(email)) {
+      errors.push(`Row ${i}: invalid email "${email}"`);
+      continue;
+    }
+
+    seenMasterlistNos.add(masterlistNo);
+
+    if (status === "active") {
+      activeEntries.push({ masterlistNo, email, phone, dob, country });
+      anyActive = true;
+    }
+    // inactive rows are silently skipped (not errors, not in entries)
+  }
+
+  // All-or-nothing: return entries only if no validation errors
+  if (errors.length > 0) {
+    return { entries: [], errors };
+  }
+
+  if (!anyActive) {
+    errors.push("No eligible rows — all rows are inactive or empty");
+    return { entries: [], errors };
+  }
+
+  return { entries: activeEntries, errors: [] };
 }

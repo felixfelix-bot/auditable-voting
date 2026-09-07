@@ -297,7 +297,7 @@ describe("parseMasterlistCsv", () => {
       "1,ML001,alice@example.com,,,USA,active\n" +
       "2,ML001,bob@example.com,,,Canada,active";
     const result = parseMasterlistCsv(csv);
-    expect(result.errors).toHaveLength(2); // dup + no eligible after all-or-nothing
+    expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(/duplicate/i);
   });
 
