@@ -582,6 +582,7 @@ vi.mock("./tokenIdentity", () => ({
 }));
 
 vi.mock("./simpleShardCertificate", () => ({
+  SIMPLE_MIN_SIGNER_THRESHOLD: 2,
   generateSimpleBlindKeyPair: vi.fn(async () => ({
     scheme: "rsa-blind-v1",
     keyId: `key-${Object.keys(blindAnnouncements).length + 1}`,
