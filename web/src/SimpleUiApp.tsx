@@ -3,6 +3,7 @@ import { generateSecretKey, getPublicKey, nip19, type NostrEvent } from "nostr-t
 import { decodeNsec, deriveNpubFromNsec, isValidNpub } from "./nostrIdentity";
 import { deriveActorDisplayId } from "./actorDisplay";
 import QuestionnaireVoterPanel from "./QuestionnaireVoterPanel";
+import ResidentOtpEntry from "./ResidentOtpEntry";
 import SimpleIdentityPanel from "./SimpleIdentityPanel";
 import SimpleMessagesPanel from "./SimpleMessagesPanel";
 import SimpleQrScanner from "./SimpleQrScanner";
@@ -3396,6 +3397,7 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
           hidden={activeTab !== 'vote'}
           aria-hidden={activeTab !== 'vote'}
         >
+            <ResidentOtpEntry />
             {identityReady ? <QuestionnaireVoterPanel
               onContextChange={handleQuestionnaireContextChange}
               participationHistory={questionnaireParticipationHistory}
