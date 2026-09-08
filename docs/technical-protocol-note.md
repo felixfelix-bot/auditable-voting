@@ -455,16 +455,31 @@ If done correctly, the organiser signs *something valid* without learning the fi
 
 ## 11. Threshold Model
 
-The target direction is a threshold model:
+The protocol supports multi-organiser (multi-coordinator) share thresholds:
+multiple organisers may each issue their own blinded share, and a ballot
+token is only derived once the voter holds enough valid shares.
 
-- multiple organisers may issue shares
-- the voter needs enough valid shares to vote
+**Shipped default: single coordinator (`t = 1`).** The live implementation
+runs single-coordinator rounds: one valid share from the round's coordinator
+is enough to derive a ballot token. This keeps shipped behaviour identical
+to earlier releases and leaves legacy single-coordinator rounds working
+unchanged.
 
-Example:
+**Multi-coordinator capability (`t >= 2`): implemented and tested, not yet
+enabled.** The shard-derivation layer accepts an explicit threshold option.
+When a threshold of 2 (or more) is requested, a ballot token is derived only
+once that many **distinct** coordinators have each contributed a valid
+share — a single compromised coordinator cannot satisfy `t >= 2` on its own,
+because it would need `t - 1` other coordinators to co-sign. This path is
+exercised by the test suite (see `simpleShardCertificate.test.ts`), but no
+production caller requests a threshold above 1 yet, so enforcing `t >= 2` in
+the live product remains a future enablement.
+
+Example (illustrates the multi-coordinator capability):
 
 - 3 organisers exist
 - threshold is 2-of-3
-- any 2 valid shares are enough
+- any 2 valid shares from 2 distinct organisers are enough
 
 ```mermaid
 flowchart LR
@@ -486,7 +501,18 @@ Shares must be checked against:
 
 - the round’s authorised organiser roster
 - the round’s blind key announcements
-- the threshold rule for that round
+- the round’s threshold rule — today a single coordinator (`t = 1`) is
+  required; `t >= 2` is supported and tested but not yet enforced
+
+### Per-signer independent admission
+
+Because the multi-coordinator model relies on independent signers, every
+organiser runs its **own admission list** (its masterlist / known-voter
+set) and must **independently** verify that a requesting voter is admitted
+before issuing a share. No organiser can vouch for another's admission
+decision. This matters once `t >= 2` is enabled: a corrupt coordinator could
+then mint a ballot only if it could find `threshold - 1` other coordinators
+willing to sign for a voter those coordinators have not admitted.
 
 ---
 
