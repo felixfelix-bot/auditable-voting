@@ -33,7 +33,7 @@ import { buildQuestionnaireDefinitionReference, questionnaireDefinitionEventHash
 import { tryWriteClipboard } from "./clipboard";
 import { uploadQuestionnaireResultPack } from "./questionnaireResultPack";
 import { fetchLatestQuestionnaireDefinitionByCoordinator, fetchQuestionnaireBlindResponses, fetchQuestionnaireProvisionalResponses, fetchQuestionnaireResultSummary } from "./questionnaireTransport";
-import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofs } from "./questionnaireTransport";
+import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofVerdicts, type QuestionnaireBlindProofVerdict } from "./questionnaireTransport";
 import {
   decryptQuestionnaireBlindResponseAnswers,
   parseQuestionnaireBlindResponseEvent,
@@ -2108,7 +2108,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     publicResponseEntries?: QuestionnaireBlindResponseEntry[];
     provisionalResponseEntries?: QuestionnaireProvisionalResponseEntry[];
     publicDecisionEntries?: QuestionnaireSubmissionDecisionEntry[];
-    verifiedResponseIds?: Iterable<string>;
+    proofVerdicts?: Iterable<readonly [string, QuestionnaireBlindProofVerdict]>;
     resultEvents: NostrEvent[];
     diagnostics?: {
       definition: { mode: "filtered" | "kind_only_fallback"; filteredCount: number; kindOnlyCount: number };
@@ -2216,7 +2216,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       const admissions = evaluateQuestionnaireBlindAdmissions({
         entries: publicResponseEntries,
         decisionEntries: publicDecisionEntries,
-        verifiedResponseIds: input.verifiedResponseIds,
+        proofVerdicts: input.proofVerdicts,
         requireVerifiedProofs: true,
       });
       const acceptedFromSubmissions = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({
@@ -2345,7 +2345,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2356,7 +2356,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -2688,7 +2688,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2699,7 +2699,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -4156,14 +4156,14 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             relays: definition.questionnaireRelays ?? questionnaireRelayPublishHints,
           }).catch(() => []),
         ]);
-        const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+        const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
           entries: publicResponses,
           publicKey: definition.blindSigningPublicKey ?? effectiveBlindSigningPublicKey ?? null,
         });
         const admissions = evaluateQuestionnaireBlindAdmissions({
           entries: publicResponses,
           decisionEntries,
-          verifiedResponseIds,
+          proofVerdicts,
           requireVerifiedProofs: true,
         });
         const acceptedResponses = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({

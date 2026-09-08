@@ -190,7 +190,7 @@ describe("questionnaireTransport blind admissions", () => {
 
     const result = evaluateQuestionnaireBlindAdmissions({
       entries: [response],
-      verifiedResponseIds: [],
+      proofVerdicts: [],
       requireVerifiedProofs: true,
     });
 
@@ -217,7 +217,7 @@ describe("questionnaireTransport blind admissions", () => {
     const result = evaluateQuestionnaireBlindAdmissions({
       entries: [response],
       decisionEntries: [accepted],
-      verifiedResponseIds: [],
+      proofVerdicts: [],
       requireVerifiedProofs: true,
     });
 
@@ -331,12 +331,112 @@ describe("questionnaireTransport blind admissions", () => {
     const result = evaluateQuestionnaireBlindAdmissions({
       entries: [response],
       decisionEntries: [invalid],
-      verifiedResponseIds: ["resp-1"],
+      proofVerdicts: [["resp-1", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }]],
     });
 
     expect(result.accepted).toHaveLength(1);
     expect(result.rejected).toHaveLength(0);
     expect(result.accepted[0].decisionEventId).toBe(null);
     expect(result.accepted[0].rejectionReason).toBe(null);
+  });
+});
+
+describe("questionnaireTransport tri-state proof fold (fail-closed)", () => {
+  const validVerdict = {
+    verdict: "valid" as const,
+    reason: null,
+    component: "questionnaire_blind_token_proof" as const,
+  };
+  const invalidVerdict = {
+    verdict: "invalid" as const,
+    reason: "token_proof_signature_invalid",
+    component: "questionnaire_blind_token_proof" as const,
+  };
+  const unknownVerdict = {
+    verdict: "unknown" as const,
+    reason: "definition_blind_signing_public_key_absent",
+    component: "questionnaire_blind_token_proof" as const,
+  };
+
+  it("rejects a response whose proof verdict is unknown (definition key absent) instead of admitting it", () => {
+    const response = blindResponse({
+      responseId: "resp-1",
+      nullifier: "nullifier-x",
+      createdAt: 1712537200,
+      eventId: "event-aaa",
+    });
+
+    const result = evaluateQuestionnaireBlindAdmissions({
+      entries: [response],
+      proofVerdicts: [["resp-1", unknownVerdict]],
+    });
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].response.responseId).toBe("resp-1");
+    expect(result.rejected[0].rejectionReason).toBe("unknown_token_proof");
+  });
+
+  it("rejects a response whose proof verdict is invalid when the definition key is present", () => {
+    const response = blindResponse({
+      responseId: "resp-1",
+      nullifier: "nullifier-x",
+      createdAt: 1712537200,
+      eventId: "event-aaa",
+    });
+
+    const result = evaluateQuestionnaireBlindAdmissions({
+      entries: [response],
+      proofVerdicts: [["resp-1", invalidVerdict]],
+    });
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].rejectionReason).toBe("invalid_token_proof");
+  });
+
+  it("admits a response whose proof verdict is valid", () => {
+    const response = blindResponse({
+      responseId: "resp-1",
+      nullifier: "nullifier-x",
+      createdAt: 1712537200,
+      eventId: "event-aaa",
+    });
+
+    const result = evaluateQuestionnaireBlindAdmissions({
+      entries: [response],
+      proofVerdicts: [["resp-1", validVerdict]],
+    });
+
+    expect(result.accepted).toHaveLength(1);
+    expect(result.rejected).toHaveLength(0);
+    expect(result.accepted[0].response.responseId).toBe("resp-1");
+  });
+
+  it("cannot be overridden by a remote accepted decision when the proof verdict is unknown", () => {
+    const response = blindResponse({
+      responseId: "resp-1",
+      nullifier: "nullifier-x",
+      createdAt: 1712537200,
+      eventId: "event-aaa",
+    });
+    const accepted = submissionDecision({
+      submissionId: "resp-1",
+      nullifier: "nullifier-x",
+      accepted: true,
+      createdAt: 1712537300,
+      eventId: "decision-accepted",
+    });
+
+    const result = evaluateQuestionnaireBlindAdmissions({
+      entries: [response],
+      decisionEntries: [accepted],
+      proofVerdicts: [["resp-1", unknownVerdict]],
+    });
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].rejectionReason).toBe("unknown_token_proof");
+    expect(result.rejected[0].decisionEventId).toBe(null);
   });
 });

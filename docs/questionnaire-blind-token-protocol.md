@@ -229,6 +229,18 @@ Organiser-side verification (especially in encrypted mode) additionally checks:
 - required answers
 - option validity, rank minimums, and free-text length limits
 
+### 8.1 Fail-closed proof verification (observer fold)
+
+Blind-token proof verification in the observer fold is tri-state and fail-closed:
+
+- `valid` — the definition's public blind-signing JWK is present and every proof in the response verifies.
+- `invalid` — the key is present but at least one proof fails verification.
+- `unknown` — the definition's public blind-signing JWK is absent, so the proof cannot be checked.
+
+When proof verification is supplied to the admission fold, enforcement is fail-closed by default: only `valid` proofs are admitted. `invalid` proofs are rejected with reason `invalid_token_proof`; `unknown` proofs are rejected with reason `unknown_token_proof` rather than being silently admitted. A response carrying an `unknown` verdict is never treated as admitted, even when a remote coordinator decision claims to have accepted it.
+
+This replaces the earlier fail-open behaviour where an absent key collapsed every proof to "not verified" and responses were admitted without verification.
+
 ## 9. Private bundle transport
 
 Blind request and blind issuance DMs are ordinary JSON envelopes by default. Large bundled envelopes may be wrapped before NIP-17 encryption as:
