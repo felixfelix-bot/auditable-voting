@@ -56,7 +56,6 @@ const toSimplePublicShardProof = vi.fn((certificate: any) => ({
 const deriveTokenIdFromSimplePublicShardProofs = vi.fn(async () => "token-1");
 
 vi.mock("./simpleShardCertificate", () => ({
-  SIMPLE_MIN_SIGNER_THRESHOLD: 2,
   toSimplePublicShardProof,
   deriveTokenIdFromSimplePublicShardProofs,
 }));

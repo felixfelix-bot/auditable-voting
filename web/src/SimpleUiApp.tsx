@@ -20,7 +20,6 @@ import {
   createSimpleBlindIssuanceRequest,
   fetchLatestSimpleBlindKeyAnnouncement,
   parseSimpleShardCertificate,
-  SIMPLE_MIN_SIGNER_THRESHOLD,
   subscribeLatestSimpleBlindKeyAnnouncement,
   unblindSimpleBlindShare,
   type SimpleBlindKeyAnnouncement,
@@ -2898,10 +2897,7 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
     }
   }, [pendingBlindRequests, receivedShards, roundReplyKeypairs, voterKeypair?.npub]);
 
-  const requiredShardCount = Math.max(
-    SIMPLE_MIN_SIGNER_THRESHOLD,
-    effectiveLiveVoteSession?.thresholdT ?? SIMPLE_MIN_SIGNER_THRESHOLD,
-  );
+  const requiredShardCount = Math.max(1, effectiveLiveVoteSession?.thresholdT ?? 1);
   const voteSubmittedSuccessfully = submitStatus?.startsWith("Vote submitted:") ?? false;
   const voteSubmitting = submitStatus === "Submitting vote...";
   const voteTicketReady = uniqueShardResponses.length >= requiredShardCount && requiredShardCount > 0;

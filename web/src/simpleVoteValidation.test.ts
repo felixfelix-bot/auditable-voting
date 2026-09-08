@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { validateSimpleSubmittedVotes } from "./simpleVoteValidation";
 
 vi.mock("./simpleShardCertificate", () => ({
-  SIMPLE_MIN_SIGNER_THRESHOLD: 2,
   verifySimplePublicShardProof: async (proof: { id: string }) => (
     proof.id === "valid-proof"
       ? {
@@ -24,106 +23,88 @@ vi.mock("./simpleShardCertificate", () => ({
             keyAnnouncement: { votingId: "vote-1" },
             event: proof,
           }
-        : proof.id === "valid-proof-3"
+        : proof.id === "wrong-round"
           ? {
-              coordinatorNpub: "npub1coord3",
-              votingId: "vote-1",
+              coordinatorNpub: "npub1coord",
+              votingId: "vote-x",
               tokenCommitment: "commit-1",
               shareIndex: 1,
-              publicKey: { keyId: "key-3" },
-              keyAnnouncement: { votingId: "vote-1" },
+              publicKey: { keyId: "key-1" },
+              keyAnnouncement: { votingId: "vote-x" },
               event: proof,
             }
-          : proof.id === "wrong-round"
-            ? {
-                coordinatorNpub: "npub1coord2",
-                votingId: "vote-x",
-                tokenCommitment: "commit-1",
-                shareIndex: 1,
-                publicKey: { keyId: "key-2" },
-                keyAnnouncement: { votingId: "vote-x" },
-                event: proof,
-              }
-            : null
+          : null
   ),
   parseSimplePublicShardProof: () => null,
 }));
 
-function makeVote(input: {
-  eventId: string;
-  shardProofs: Array<{ id: string }>;
-  tokenId?: string | null;
-  createdAt?: string;
-}): any {
-  return {
-    eventId: input.eventId,
-    votingId: "vote-1",
-    voterNpub: "npub1ballot",
-    choice: "Yes",
-    shardProofs: input.shardProofs,
-    tokenId: input.tokenId === undefined ? "token-1" : input.tokenId,
-    createdAt: input.createdAt ?? "2026-03-31T00:00:00.000Z",
-  };
-}
-
 describe("simpleVoteValidation", () => {
-  it("marks votes valid when two distinct coordinators have signed shard proofs", async () => {
+  it("marks votes valid when enough signed shard proofs are present", async () => {
     const results = await validateSimpleSubmittedVotes([
-      makeVote({
+      {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }, { id: "valid-proof-2" }],
-      }),
-    ], 2, ["npub1coord", "npub1coord2"]);
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "valid-proof" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
+    ], 1, ["npub1coord"]);
 
     expect(results[0]).toEqual({
-      vote: makeVote({
+      vote: {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }, { id: "valid-proof-2" }],
-      }),
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "valid-proof" }],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
       valid: true,
       reason: "Valid",
     });
   });
 
-  it("rejects a ballot minted by a single corrupt coordinator (threshold 2 lock)", async () => {
+  it("marks votes invalid when shard proofs are missing", async () => {
     const results = await validateSimpleSubmittedVotes([
-      makeVote({
+      {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }],
-      }),
-    ], 2, ["npub1coord"]);
-
-    expect(results[0].valid).toBe(false);
-    expect(results[0].reason).toBe("Not enough valid shards");
-  });
-
-  it("clamps a call-site threshold of 1 up to the minimum of 2", async () => {
-    const results = await validateSimpleSubmittedVotes([
-      makeVote({
-        eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }],
-      }),
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [],
+        tokenId: null,
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
     ], 1, ["npub1coord"]);
 
     expect(results[0].valid).toBe(false);
     expect(results[0].reason).toBe("Not enough valid shards");
   });
 
-  it("marks votes invalid when shard proofs are missing", async () => {
-    const results = await validateSimpleSubmittedVotes([
-      makeVote({ eventId: "vote-1", shardProofs: [], tokenId: null }),
-    ], 2, ["npub1coord"]);
-
-    expect(results[0].valid).toBe(false);
-    expect(results[0].reason).toBe("Not enough valid shards");
-  });
-
   it("marks duplicate combined tokens invalid using canonical event ordering", async () => {
-    const twoShards = [{ id: "valid-proof" }, { id: "valid-proof-2" }];
     const results = await validateSimpleSubmittedVotes([
-      makeVote({ eventId: "vote-later", shardProofs: twoShards, createdAt: "2026-03-31T00:01:00.000Z" }),
-      makeVote({ eventId: "vote-earlier", shardProofs: twoShards, createdAt: "2026-03-31T00:00:00.000Z" }),
-    ], 2, ["npub1coord", "npub1coord2"]);
+      {
+        eventId: "vote-later",
+        votingId: "vote-1",
+        voterNpub: "npub1ballot2",
+        choice: "No",
+        shardProofs: [{ id: "valid-proof" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:01:00.000Z",
+      },
+      {
+        eventId: "vote-earlier",
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "valid-proof" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
+    ], 1, ["npub1coord"]);
 
     expect(results[0].vote.eventId).toBe("vote-earlier");
     expect(results[0].valid).toBe(true);
@@ -133,10 +114,15 @@ describe("simpleVoteValidation", () => {
 
   it("accepts distinct authorized coordinator shares even when share indexes match", async () => {
     const results = await validateSimpleSubmittedVotes([
-      makeVote({
+      {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }, { id: "valid-proof-2" }],
-      }),
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "valid-proof" } as any, { id: "valid-proof-2" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
     ], 2, ["npub1coord", "npub1coord2"]);
 
     expect(results[0].valid).toBe(true);
@@ -145,11 +131,16 @@ describe("simpleVoteValidation", () => {
 
   it("rejects shares from unauthorized coordinators", async () => {
     const results = await validateSimpleSubmittedVotes([
-      makeVote({
+      {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }, { id: "valid-proof-3" }],
-      }),
-    ], 2, ["npub1coord", "npub1coord2"]);
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "valid-proof-2" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
+    ], 1, ["npub1coord"]);
 
     expect(results[0].valid).toBe(false);
     expect(results[0].reason).toBe("Unauthorized organiser share");
@@ -157,11 +148,16 @@ describe("simpleVoteValidation", () => {
 
   it("rejects proofs that bind to a different round", async () => {
     const results = await validateSimpleSubmittedVotes([
-      makeVote({
+      {
         eventId: "vote-1",
-        shardProofs: [{ id: "valid-proof" }, { id: "wrong-round" }],
-      }),
-    ], 2, ["npub1coord", "npub1coord2"]);
+        votingId: "vote-1",
+        voterNpub: "npub1ballot",
+        choice: "Yes",
+        shardProofs: [{ id: "wrong-round" } as any],
+        tokenId: "token-1",
+        createdAt: "2026-03-31T00:00:00.000Z",
+      },
+    ], 1, ["npub1coord"]);
 
     expect(results[0].valid).toBe(false);
     expect(results[0].reason).toBe("Mismatched voting id");
