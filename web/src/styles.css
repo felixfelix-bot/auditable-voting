@@ -6060,6 +6060,90 @@ code {
   text-decoration: underline;
 }
 
+/* Human-readable results (default presentation): plain counts + demographic breakdown. */
+.simple-human-results {
+  margin: 4px 22px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--simple-border);
+  border-radius: 12px;
+  background: var(--simple-surface-2);
+}
+
+.simple-human-results-counts {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--simple-text);
+}
+
+.simple-human-results-counts strong {
+  font-weight: 800;
+}
+
+.simple-human-results-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.simple-human-results-question {
+  margin: 0;
+}
+
+.simple-human-results-question-prompt {
+  margin: 0 0 4px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--simple-muted);
+}
+
+.simple-human-results-question-entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.simple-human-results-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 0.86rem;
+  color: var(--simple-text);
+}
+
+.simple-human-results-entry strong {
+  font-weight: 700;
+}
+
+.simple-human-results-entry-percent {
+  color: var(--simple-muted);
+  font-size: 0.78rem;
+}
+
+.simple-human-results-entry-single {
+  font-size: 0.86rem;
+  color: var(--simple-muted);
+}
+
+/* Verification pack (auditor link): result hash + raw CSV pack. */
+.simple-verification-pack {
+  padding: 14px 22px;
+}
+
+.simple-verification-pack .simple-voter-note {
+  margin: 0 0 14px;
+}
+
+.simple-verification-pack-hash {
+  margin: 0 0 14px;
+}
+
+.simple-verification-pack-hash .simple-auditor-copy-value {
+  margin-top: 6px;
+}
+
 .simple-auditor-summary-island .simple-voter-note {
   color: var(--simple-teal);
   font-size: 0.82rem;

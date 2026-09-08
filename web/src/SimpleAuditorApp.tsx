@@ -1223,6 +1223,7 @@ export default function SimpleAuditorApp({
             questions: selectedQuestionnaire.questions,
           } : null}
           questionSummaries={displayedQuestionSummaries}
+          resultHash={selectedResultSummary?.resultHash ?? null}
           responseDetails={displayResponseDetails}
           provisionalResponseDetails={selectedProvisionalResponseDetails}
           displayValidCount={displayValidCount}

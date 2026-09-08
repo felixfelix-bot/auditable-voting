@@ -29,6 +29,10 @@ import type {
   QuestionnaireResultPackReference,
   QuestionnaireResultQuestionSummary,
 } from "./questionnaireProtocol";
+import {
+  deriveHumanReadableResults,
+  type HumanReadableResults,
+} from "./humanReadableResults";
 
 const SUBMITTED_VOTES_PAGE_SIZE = 100;
 
@@ -131,6 +135,8 @@ type QuestionnaireResultsDashboardProps = {
   coordinatorText: string;
   publishedAtLabel: string;
   publishedAtTime?: number | null;
+  /** SHA-256 digest over the canonical result summary (the re-foldable proof). */
+  resultHash?: string | null;
   canExportResults?: boolean;
   onExportResults?: () => void;
   actions?: ReactNode;
@@ -199,6 +205,7 @@ export default function QuestionnaireResultsDashboard({
   coordinatorText,
   publishedAtLabel,
   publishedAtTime,
+  resultHash = null,
   canExportResults = false,
   onExportResults,
   actions,
@@ -329,6 +336,21 @@ export default function QuestionnaireResultsDashboard({
     provisionalDeltaQuestionSummaryById,
     publishedTotalsAvailable,
     questionSummaries,
+    questionnaire?.questions,
+  ]);
+
+  const humanReadableResults = useMemo<HumanReadableResults>(() => deriveHumanReadableResults({
+    acceptedResponseCount: publishedTotalsAvailable ? displayValidCount : loadedAcceptedCount,
+    rejectedResponseCount: publishedTotalsAvailable ? displayInvalidCount : loadedRejectedCount,
+    questionSummaries: effectiveQuestionSummaries,
+    questions: questionnaire?.questions ?? [],
+  }), [
+    publishedTotalsAvailable,
+    displayValidCount,
+    displayInvalidCount,
+    loadedAcceptedCount,
+    loadedRejectedCount,
+    effectiveQuestionSummaries,
     questionnaire?.questions,
   ]);
 
@@ -929,24 +951,6 @@ export default function QuestionnaireResultsDashboard({
                     </div>
                   </div>
                 </section>
-                {questionnaire.resultPack?.url ? (
-                  <section className='simple-auditor-status-card simple-auditor-status-card-wide'>
-                    <div className='simple-auditor-status-detail-row'>
-                      <span className='simple-auditor-status-icon' aria-hidden='true'><FileText /></span>
-                      <div>
-                        <p className='simple-auditor-summary-label'>Result pack</p>
-                        <div className='simple-auditor-result-pack-links'>
-                          <a href={questionnaire.resultPack.url} target='_blank' rel='noreferrer'>Download</a>
-                          {(questionnaire.resultPack.mirrors ?? []).slice(0, 3).map((mirror, index) => (
-                            <a key={mirror.url} href={mirror.url} target='_blank' rel='noreferrer'>
-                              Mirror {index + 1}
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-                ) : null}
               </AuditorDropdown>
             ) : null}
 
@@ -958,6 +962,7 @@ export default function QuestionnaireResultsDashboard({
                 title={<span className='simple-voter-section-title simple-auditor-results-subtitle' role='heading' aria-level={2}>Results</span>}
               >
                 {resultSummary}
+                <HumanReadableResultsSummary results={humanReadableResults} />
                 {effectiveQuestionSummaries.length > 0 ? (
                   <UiTextField
                     label='Filter results'
@@ -973,6 +978,20 @@ export default function QuestionnaireResultsDashboard({
                 {questionSummaryContent}
               </AuditorDropdown>
             ) : questionSummaryContent}
+
+            {!isSessionVariant ? (
+              <AuditorDropdown
+                className='simple-auditor-verification-dropdown'
+                headClassName='simple-auditor-verification-dropdown-head'
+                title={<span className='simple-voter-section-title simple-auditor-results-subtitle' role='heading' aria-level={2}>Verification pack (auditors)</span>}
+              >
+                <ResultVerificationPack
+                  resultHash={resultHash}
+                  resultPack={questionnaire.resultPack}
+                  onExportResults={canExportResults && onExportResults ? onExportResults : undefined}
+                />
+              </AuditorDropdown>
+            ) : null}
           </>
         ) : emptySelectionText ? (
           <p className='simple-voter-empty simple-auditor-empty-panel'>{emptySelectionText}</p>
@@ -1052,6 +1071,115 @@ export default function QuestionnaireResultsDashboard({
         </section>
       ) : null}
     </>
+  );
+}
+
+function formatPercent(value: number) {
+  return value % 1 === 0 ? String(value) : value.toFixed(1);
+}
+
+/**
+ * The default, human-readable presentation of a result: plain counts plus a
+ * per-question demographic breakdown (community/country and other tallies).
+ * Renders the same numbers the verification pack commits to, without the
+ * cryptographic detail.
+ */
+function HumanReadableResultsSummary({ results }: { results: HumanReadableResults }) {
+  return (
+    <section className='simple-human-results' aria-label='Results at a glance'>
+      <p className='simple-human-results-counts'>
+        <strong>{results.acceptedResponseCount}</strong> accepted
+        {results.rejectedResponseCount > 0 ? (
+          <span> · <strong>{results.rejectedResponseCount}</strong> rejected</span>
+        ) : null}
+        <span> of <strong>{results.totalResponseCount}</strong> responses</span>
+      </p>
+      {results.breakdowns.length > 0 ? (
+        <dl className='simple-human-results-breakdown'>
+          {results.breakdowns.map((breakdown) => (
+            <div key={breakdown.questionId} className='simple-human-results-question'>
+              <dt className='simple-human-results-question-prompt'>
+                {breakdown.questionNumber !== null ? `Q${breakdown.questionNumber}. ` : ""}{breakdown.prompt}
+              </dt>
+              <dd className='simple-human-results-question-entries'>
+                {breakdown.entries.length > 0 ? (
+                  breakdown.entries.map((entry) => (
+                    <span key={entry.label} className='simple-human-results-entry'>
+                      <span className='simple-human-results-entry-label'>{entry.label}</span>
+                      {" "}
+                      <strong>{entry.count}</strong>
+                      <span className='simple-human-results-entry-percent'> ({formatPercent(entry.percent)}%)</span>
+                    </span>
+                  ))
+                ) : (
+                  <span className='simple-human-results-entry-single'>{breakdown.responseCount} written responses</span>
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The verifiable cryptographic pack, kept behind a link for auditors: the
+ * re-foldable proof (`resultHash`) plus the raw CSV result pack. The
+ * `resultHash` is a SHA-256 digest over the canonical result summary, so an
+ * auditor can re-derive it from the published counts and question tallies.
+ */
+function ResultVerificationPack({
+  resultHash,
+  resultPack,
+  onExportResults,
+}: {
+  resultHash: string | null | undefined;
+  resultPack: QuestionnaireResultPackReference | null | undefined;
+  onExportResults?: () => void;
+}) {
+  return (
+    <div className='simple-verification-pack'>
+      <p className='simple-voter-note'>
+        The result hash is a SHA-256 digest of the canonical result summary (the counts and per-question
+        tallies above). An auditor can re-fold the published responses and re-derive it to check nothing changed.
+      </p>
+      {resultHash ? (
+        <div className='simple-verification-pack-hash'>
+          <p className='simple-auditor-summary-label'>Result hash</p>
+          <div className='simple-auditor-copy-value'>
+            <span className='simple-auditor-copy-value-text'>{resultHash}</span>
+            <button
+              type='button'
+              className='simple-auditor-copy-value-button'
+              aria-label='Copy result hash'
+              onClick={() => {
+                if (typeof navigator !== "undefined" && navigator.clipboard) {
+                  void navigator.clipboard.writeText(resultHash);
+                }
+              }}
+            >
+              <Copy aria-hidden='true' />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className='simple-voter-note'>No result hash was published with this summary.</p>
+      )}
+      {resultPack?.url ? (
+        <div className='simple-auditor-result-pack-links'>
+          <a href={resultPack.url} target='_blank' rel='noreferrer'>Download result pack (CSV)</a>
+          {(resultPack.mirrors ?? []).slice(0, 3).map((mirror, index) => (
+            <a key={mirror.url} href={mirror.url} target='_blank' rel='noreferrer'>Mirror {index + 1}</a>
+          ))}
+        </div>
+      ) : null}
+      {onExportResults ? (
+        <UiButton icon='export' className='simple-auditor-export-button' onPress={onExportResults}>
+          Export results
+        </UiButton>
+      ) : null}
+    </div>
   );
 }
 

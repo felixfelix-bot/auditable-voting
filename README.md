@@ -150,7 +150,7 @@ It can:
 - publish the result summary;
 - stay online for later sessions after currently delegated close and summary publication are complete.
 
-Organiser and Observer show provisional answers as live while a voter is completing the questionnaire. A submitted public ballot is immediately shown as published because the voter cannot change it. A final public result summary remains the auditable closing record.
+Organiser and Observer show provisional answers as live while a voter is completing the questionnaire. A submitted public ballot is immediately shown as published because the voter cannot change it. A final public result summary remains the auditable closing record. Results open as a plain, human-readable view — total counts plus a per-question demographic breakdown (for example, community/country tallies) — with the verifiable result hash and downloadable result pack kept behind a "Verification pack (auditors)" link for auditors; both presentations show the same numbers.
 
 Run it locally:
 
