@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hashOtp, ADMISSION_TTL_MS, MAX_OTP_ATTEMPTS } from "./otpService";
-import { isOtpRedeemed, upsertIssuedOtpRecord } from "./otpAdmissionRoster";
+import { isOtpRedeemed, loadResidentNpubBindings, upsertIssuedOtpRecord } from "./otpAdmissionRoster";
 
 // jsdom provides crypto.getRandomValues but not crypto.subtle; otpService needs both.
 if (!globalThis.crypto?.subtle) {
@@ -92,6 +92,32 @@ describe("ResidentOtpEntry verification outcomes", () => {
     );
     expect(isOtpRedeemed(ELECTION_A, 101)).toBe(true);
     expect(onAdmitted).toHaveBeenCalledWith({ mastersListNumber: 101, electionId: ELECTION_A });
+  });
+
+  it("records the redeeming voter npub when one is supplied", async () => {
+    const onAdmitted = vi.fn();
+    await seedIssuedCode(101, "424242");
+    render(<ResidentOtpEntry electionId={ELECTION_A} voterNpub="npub1test" onAdmitted={onAdmitted} />);
+    await submitEntry("101", "424242");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe("Code verified. You are admitted to vote."),
+    );
+    expect(loadResidentNpubBindings(ELECTION_A)).toEqual([
+      expect.objectContaining({ mastersListNumber: 101, npub: "npub1test" }),
+    ]);
+    expect(onAdmitted).toHaveBeenCalledWith({ mastersListNumber: 101, electionId: ELECTION_A });
+  });
+
+  it("does not record a binding when no voter npub is supplied", async () => {
+    await seedIssuedCode(101, "424242");
+    render(<ResidentOtpEntry electionId={ELECTION_A} />);
+    await submitEntry("101", "424242");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe("Code verified. You are admitted to vote."),
+    );
+    expect(loadResidentNpubBindings(ELECTION_A)).toEqual([]);
   });
 
   it("rejects an incorrect code", async () => {
