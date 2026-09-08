@@ -1,4 +1,5 @@
 import { test, expect, type Page, type BrowserContext } from "@playwright/test";
+import { resolvePagesBaseUrl } from "./pagesBaseUrl";
 
 // ---------------------------------------------------------------------------
 // GitHub Pages E2E video spec for auditable-voting.
@@ -21,7 +22,7 @@ import { test, expect, type Page, type BrowserContext } from "@playwright/test";
 // the voter ballot request without blocking on relay success.
 // ---------------------------------------------------------------------------
 
-const BASE = "https://felixfelix-bot.github.io/auditable-voting";
+const BASE = resolvePagesBaseUrl();
 
 interface MockEmail {
   to: string;
