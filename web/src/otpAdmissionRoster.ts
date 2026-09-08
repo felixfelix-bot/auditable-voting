@@ -218,3 +218,94 @@ export function isOtpRedeemed(
 ): boolean {
   return loadRedeemedOtpNumbers(electionId).includes(mastersListNumber);
 }
+
+// ---------- Resident → voter-npub binding ----------
+
+/**
+ * A link between a resident's redeemed OTP and the voter identity that will
+ * cast their ballot. The OTP proves the resident is on the masters list; the
+ * binding attaches that eligibility to a voter npub so the coordinator can
+ * push it into the npub-keyed voting roster (`admitVotersToRoster`).
+ */
+export interface ResidentNpubBinding {
+  mastersListNumber: number;
+  npub: string;
+  boundAt: number;
+  electionId: string;
+}
+
+/** Prefix for the per-election resident→npub binding set. */
+export const OTP_ADMISSION_BINDING_PREFIX = "otp-admission-binding:";
+
+function bindingStorageKey(electionId: string): string {
+  return `${OTP_ADMISSION_BINDING_PREFIX}${electionId}`;
+}
+
+function normaliseResidentNpubBinding(value: unknown): ResidentNpubBinding | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const binding = value as Record<string, unknown>;
+  if (
+    typeof binding.mastersListNumber !== "number"
+    || !Number.isInteger(binding.mastersListNumber)
+    || binding.mastersListNumber <= 0
+  ) {
+    return null;
+  }
+  if (typeof binding.npub !== "string" || binding.npub.trim().length === 0) {
+    return null;
+  }
+  if (typeof binding.boundAt !== "number" || !Number.isFinite(binding.boundAt)) {
+    return null;
+  }
+  return {
+    mastersListNumber: binding.mastersListNumber,
+    npub: binding.npub.trim(),
+    boundAt: binding.boundAt,
+    electionId: typeof binding.electionId === "string" ? binding.electionId : "",
+  };
+}
+
+/** Load the resident→npub bindings for one election. */
+export function loadResidentNpubBindings(electionId: string): ResidentNpubBinding[] {
+  const raw = readJson<unknown>(bindingStorageKey(electionId), []);
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const bindings: ResidentNpubBinding[] = [];
+  for (const entry of raw) {
+    const binding = normaliseResidentNpubBinding(entry);
+    if (binding) {
+      bindings.push(binding);
+    }
+  }
+  return bindings;
+}
+
+/**
+ * Record a resident→npub binding for an election, keyed by masters-list
+ * number. Idempotent per resident: a later binding replaces the earlier one.
+ */
+export function recordResidentNpubBinding(binding: ResidentNpubBinding): ResidentNpubBinding[] {
+  const electionId = binding.electionId ?? "";
+  const current = loadResidentNpubBindings(electionId);
+  const next = [
+    ...current.filter((entry) => entry.mastersListNumber !== binding.mastersListNumber),
+    binding,
+  ];
+  writeJson(bindingStorageKey(electionId), next);
+  return next;
+}
+
+/**
+ * Find the voter npub bound to a resident's redeemed OTP, if any.
+ */
+export function findResidentNpubBinding(
+  electionId: string,
+  mastersListNumber: number,
+): ResidentNpubBinding | undefined {
+  return loadResidentNpubBindings(electionId).find(
+    (entry) => entry.mastersListNumber === mastersListNumber,
+  );
+}
