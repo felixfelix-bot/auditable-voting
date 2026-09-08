@@ -9,6 +9,7 @@ import {
   findIssuedOtpRecord,
   isOtpRedeemed,
   markOtpRedeemed,
+  recordResidentNpubBinding,
 } from "./otpAdmissionRoster";
 
 export interface ResidentOtpAdmissionResult {
@@ -24,6 +25,12 @@ interface ResidentOtpEntryProps {
    */
   electionId?: string;
   /**
+   * The voter's npub, bound to the redeemed code so the coordinator can push
+   * this admission into the npub-keyed voting roster. Optional: when absent
+   * the code is still redeemed and gated, but no voter identity is recorded.
+   */
+  voterNpub?: string;
+  /**
    * Called once a code is successfully verified and marked redeemed. This is
    * the admission flag that gates ballot and private-invite access.
    */
@@ -37,9 +44,10 @@ interface ResidentOtpEntryProps {
  * organiser handed them out of band. Verification runs entirely in the
  * browser against the persisted issued-hash roster (`otpAdmissionRoster`):
  * no code or hash is sent anywhere. On success the code is marked redeemed
- * (so it cannot be used twice) and `onAdmitted` reports the admission flag.
+ * (so it cannot be used twice), the voter's npub is bound to the admission,
+ * and `onAdmitted` reports the admission flag.
  */
-export default function ResidentOtpEntry({ electionId, onAdmitted }: ResidentOtpEntryProps) {
+export default function ResidentOtpEntry({ electionId, voterNpub, onAdmitted }: ResidentOtpEntryProps) {
   const [mastersListNumber, setMastersListNumber] = useState("");
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<string | null>(null);
@@ -48,6 +56,17 @@ export default function ResidentOtpEntry({ electionId, onAdmitted }: ResidentOtp
   // must read and increment them synchronously after an await — state reads
   // would be stale if two verifies resolve before a re-render.
   const failedAttemptsRef = useRef<Record<number, number>>({});
+
+  function recordBindingIfKnown(mastersListNumberValue: number, electionIdValue: string) {
+    if (voterNpub?.trim()) {
+      recordResidentNpubBinding({
+        mastersListNumber: mastersListNumberValue,
+        npub: voterNpub.trim(),
+        boundAt: Date.now(),
+        electionId: electionIdValue,
+      });
+    }
+  }
 
   async function handleVerify() {
     const mastersListNumberValue = Number(mastersListNumber.trim());
@@ -69,6 +88,7 @@ export default function ResidentOtpEntry({ electionId, onAdmitted }: ResidentOtp
     }
 
     if (isOtpRedeemed(record.electionId, mastersListNumberValue)) {
+      recordBindingIfKnown(mastersListNumberValue, record.electionId);
       setAdmitted({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
       setStatus("This code has already been redeemed.");
       onAdmitted?.({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
@@ -84,6 +104,7 @@ export default function ResidentOtpEntry({ electionId, onAdmitted }: ResidentOtp
     if (matches) {
       failedAttemptsRef.current = { ...failedAttemptsRef.current, [mastersListNumberValue]: 0 };
       markOtpRedeemed(record.electionId, mastersListNumberValue);
+      recordBindingIfKnown(mastersListNumberValue, record.electionId);
       setAdmitted({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
       setStatus("Code verified. You are admitted to vote.");
       onAdmitted?.({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
