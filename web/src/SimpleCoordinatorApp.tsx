@@ -5575,6 +5575,18 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
     };
   }
 
+  function handleResidentOtpAdmitted(result: { mastersListNumber: number; electionId: string }) {
+    // Resident OTP admission is masters-list-number-keyed and server-free, so
+    // it cannot be pushed straight into the npub-keyed `admitVotersToRoster`
+    // whitelist here — a resident has no npub until they connect as a voter.
+    // The persisted redeemed flag (otpAdmissionRoster) is the admission gate
+    // the voter side consults; this handler surfaces the admission in the
+    // coordinator UI. Binding a resident to a voter npub is a follow-up.
+    setAdmittedVoterStatus(
+      `Resident ${result.mastersListNumber} admitted to this election via one-time code.`,
+    );
+  }
+
   async function inviteDraftVoter() {
     const rawValue = admittedVoterDraftNpub.trim();
     if (!rawValue) {
@@ -9364,7 +9376,7 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
 	              </SimpleCollapsibleSection>
             </div>
             <div id='coordinator-resident-admission-section'>
-              <ResidentOtpAdmission />
+              <ResidentOtpAdmission electionId={optionAElectionId} onAdmitted={handleResidentOtpAdmitted} />
             </div>
             <div id='coordinator-delivery-section'>
               <DeliveryPanel electionId={optionAElectionId} />
