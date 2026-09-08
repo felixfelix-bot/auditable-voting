@@ -1643,6 +1643,7 @@ function formatInvalidReason(reason: string | null | undefined) {
     duplicate_nullifier: "Duplicate token spend",
     duplicate_response: "Duplicate response",
     invalid_token_proof: "Invalid token proof",
+    unknown_token_proof: "Unverifiable token proof (signing key missing)",
     invalid_payload_shape: "Invalid response payload",
     questionnaire_closed: "Questionnaire closed",
   };
