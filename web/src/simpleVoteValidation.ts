@@ -1,5 +1,6 @@
 import type { SimpleSubmittedVote } from "./simpleVotingSession";
 import {
+  SIMPLE_MIN_SIGNER_THRESHOLD,
   verifySimplePublicShardProof,
 } from "./simpleShardCertificate";
 import { sortSimpleVotesCanonicalRust } from "./wasm/auditableVotingCore";
@@ -12,9 +13,16 @@ export type SimpleValidatedVote = {
 
 export async function validateSimpleSubmittedVotes(
   votes: SimpleSubmittedVote[],
-  requiredShardCount: number,
+  requiredShardCount: number = SIMPLE_MIN_SIGNER_THRESHOLD,
   authorizedCoordinatorNpubs: string[] = [],
 ): Promise<SimpleValidatedVote[]> {
+  // A ballot is only ever valid when at least two independent coordinators have
+  // signed. Clamp any call-site value up so a single compromised coordinator
+  // can never satisfy the threshold alone.
+  const effectiveRequiredShardCount = Math.max(
+    SIMPLE_MIN_SIGNER_THRESHOLD,
+    requiredShardCount,
+  );
   const seenTokenIds = new Set<string>();
   const allowedCoordinators = new Set(authorizedCoordinatorNpubs);
   const canonicallySortedVotes = sortSimpleVotesCanonicalRust(votes);
@@ -37,7 +45,7 @@ export async function validateSimpleSubmittedVotes(
     const uniqueCoordinators = Array.from(
       new Set(parsedProofs.map((proof) => proof.coordinatorNpub)),
     );
-    if (uniqueCoordinators.length < requiredShardCount) {
+    if (uniqueCoordinators.length < effectiveRequiredShardCount) {
       results.push({ vote, valid: false, reason: "Not enough valid shards" });
       continue;
     }

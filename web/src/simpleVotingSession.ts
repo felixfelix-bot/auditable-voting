@@ -7,6 +7,7 @@ import {
 import { getSharedNostrPool } from "./sharedNostrPool";
 import {
   deriveTokenIdFromSimplePublicShardProofs,
+  SIMPLE_MIN_SIGNER_THRESHOLD,
   toSimplePublicShardProof,
   type SimpleShardCertificate,
   type SimplePublicShardProof,
@@ -172,6 +173,25 @@ export async function publishSimpleLiveVote(input: {
   const decoded = nip19.decode(input.coordinatorNsec.trim());
   if (decoded.type !== "nsec") {
     throw new Error("Organiser key must be an nsec.");
+  }
+
+  // A live vote must require at least two independent coordinator signatures so
+  // that a single compromised coordinator can never mint a valid ballot on its
+  // own. Reject legacy single-coordinator (t=1) rounds at the source.
+  if (
+    input.thresholdT !== undefined
+    && input.thresholdT < SIMPLE_MIN_SIGNER_THRESHOLD
+  ) {
+    throw new Error(
+      `A live vote requires at least ${SIMPLE_MIN_SIGNER_THRESHOLD} coordinator signers (threshold_t >= ${SIMPLE_MIN_SIGNER_THRESHOLD}).`,
+    );
+  }
+  if (
+    input.thresholdT !== undefined
+    && input.authorizedCoordinatorNpubs
+    && input.authorizedCoordinatorNpubs.length < input.thresholdT
+  ) {
+    throw new Error("Not enough authorised coordinators for the requested threshold.");
   }
 
   const secretKey = decoded.data as Uint8Array;
@@ -504,12 +524,17 @@ export async function publishSimpleSubmittedVote(input: {
   ballotId?: string;
   requestId?: string;
   ticketId?: string;
+  threshold?: number;
   relays?: string[];
 }) {
   const ballotDecoded = nip19.decode(input.ballotNsec.trim());
   if (ballotDecoded.type !== "nsec") {
     throw new Error("Ballot key must be an nsec.");
   }
+  const threshold = Math.max(
+    SIMPLE_MIN_SIGNER_THRESHOLD,
+    input.threshold ?? SIMPLE_MIN_SIGNER_THRESHOLD,
+  );
 
   const secretKey = ballotDecoded.data as Uint8Array;
   const ballotNpub = nip19.npubEncode(getPublicKey(secretKey));
@@ -533,7 +558,12 @@ export async function publishSimpleSubmittedVote(input: {
   const shardProofs = input.shardCertificates.map((certificate) =>
     toSimplePublicShardProof(certificate),
   );
-  const tokenId = await deriveTokenIdFromSimplePublicShardProofs(shardProofs);
+  const tokenId = await deriveTokenIdFromSimplePublicShardProofs(shardProofs, { threshold });
+  if (!tokenId) {
+    throw new Error(
+      `A ballot requires share certificates from at least ${threshold} distinct coordinators.`,
+    );
+  }
 
   const event = finalizeEvent({
     kind: SIMPLE_LIVE_VOTE_BALLOT_KIND,

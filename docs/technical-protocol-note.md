@@ -455,16 +455,17 @@ If done correctly, the organiser signs *something valid* without learning the fi
 
 ## 11. Threshold Model
 
-The target direction is a threshold model:
-
-- multiple organisers may issue shares
-- the voter needs enough valid shares to vote
+Multiple organisers each issue their own blinded share, and a voter must collect
+at least `threshold` valid shares from **distinct** organisers before a ballot
+token can be derived. The live implementation enforces a minimum threshold of
+**2** (`t >= 2`): a single compromised coordinator can never mint a valid
+ballot on its own — it needs `t - 1` honest peers to co-sign.
 
 Example:
 
 - 3 organisers exist
 - threshold is 2-of-3
-- any 2 valid shares are enough
+- any 2 valid shares from 2 distinct organisers are enough
 
 ```mermaid
 flowchart LR
@@ -486,7 +487,16 @@ Shares must be checked against:
 
 - the round’s authorised organiser roster
 - the round’s blind key announcements
-- the threshold rule for that round
+- the threshold rule for that round (minimum two distinct organisers)
+
+### Per-signer independent admission
+
+Each organiser runs its **own admission list** (its masterlist / known-voter
+set) and must **independently** verify that the requesting voter is admitted
+before issuing a share. No organiser can vouch for another's admission decision,
+and a corrupt coordinator cannot mint a ballot because it still requires
+`threshold - 1` other organisers to have independently admitted and signed for
+the same voter.
 
 ---
 

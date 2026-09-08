@@ -80,6 +80,25 @@ export type SimpleBlindShareResponse = {
   keyAnnouncementEvent: VerifiedEvent;
 };
 
+export type SimpleShardDeriveOptions = {
+  /**
+   * Minimum number of DISTINCT coordinator signatures required before a
+   * combined token may be derived. Any positive value below
+   * `SIMPLE_MIN_SIGNER_THRESHOLD` is clamped up to that minimum; `0` is the
+   * documented backwards-compatibility escape hatch for legacy
+   * single-coordinator rounds.
+   */
+  threshold: number;
+  length?: number;
+};
+
+/**
+ * Number of independent coordinators that must sign a blinded share before a
+ * ballot token is considered mintable. A single compromised coordinator can
+ * never satisfy this on its own — it needs `threshold - 1` honest peers.
+ */
+export const SIMPLE_MIN_SIGNER_THRESHOLD = 2;
+
 export type SimpleShardCertificate = {
   shareId: string;
   requestId: string;
@@ -713,6 +732,16 @@ export function createSimpleBlindIssuanceRequest(input: {
   })();
 }
 
+/**
+ * Issues a single coordinator's blinded share for a voter's issuance request.
+ *
+ * ADMISSION BOUNDARY — every signer MUST independently verify the requester's
+ * admission (its own masterlist / known-voter set) BEFORE calling this. This
+ * function signs blindly: it cannot tell an admitted voter from an interloper,
+ * so admission is the caller's per-signer responsibility and is deliberately
+ * kept outside the blind-signing primitive. Each coordinator operates its own
+ * admission list; no coordinator can vouch for another's.
+ */
 export async function createSimpleBlindShareResponse(input: {
   privateKey: SimpleBlindPrivateKey;
   keyAnnouncementEvent: VerifiedEvent;
@@ -934,12 +963,17 @@ export async function verifySimplePublicShardProof(
 
 export async function deriveTokenIdFromSimpleShardCertificates(
   certificates: SimpleShardCertificate[],
-  length = 20,
+  options: SimpleShardDeriveOptions = { threshold: SIMPLE_MIN_SIGNER_THRESHOLD },
 ): Promise<string | null> {
+  const { threshold = SIMPLE_MIN_SIGNER_THRESHOLD, length = 20 } = options;
   const validCertificates = certificates
     .map((certificate) => parseSimpleShardCertificate(certificate))
     .filter((certificate): certificate is ParsedSimpleShardCertificate => certificate !== null);
   if (validCertificates.length === 0) {
+    return null;
+  }
+
+  if (!meetsSignerThreshold(validCertificates.map((certificate) => certificate.coordinatorNpub), threshold)) {
     return null;
   }
 
@@ -958,12 +992,17 @@ export async function deriveTokenIdFromSimpleShardCertificates(
 
 export async function deriveTokenIdFromSimplePublicShardProofs(
   proofs: SimplePublicShardProof[],
-  length = 20,
+  options: SimpleShardDeriveOptions = { threshold: SIMPLE_MIN_SIGNER_THRESHOLD },
 ): Promise<string | null> {
+  const { threshold = SIMPLE_MIN_SIGNER_THRESHOLD, length = 20 } = options;
   const validProofs = proofs
     .map((proof) => parseSimplePublicShardProof(proof))
     .filter((proof): proof is ParsedSimplePublicShardProof => proof !== null);
   if (validProofs.length === 0) {
+    return null;
+  }
+
+  if (!meetsSignerThreshold(validProofs.map((proof) => proof.coordinatorNpub), threshold)) {
     return null;
   }
 
@@ -983,6 +1022,29 @@ export async function deriveTokenIdFromSimplePublicShardProofs(
     .join("|");
   const tokenId = await sha256Hex(`${uniqueTokenMessages[0]}:${shareDescriptor}`);
   return tokenId.slice(0, length);
+}
+
+/**
+ * A combined ballot token may only be derived when at least `threshold`
+ * DISTINCT coordinators have each contributed a valid share. This is the
+ * invariant that stops a single compromised coordinator from minting a valid
+ * ballot on its own: with threshold >= 2 it needs threshold - 1 honest peers.
+ *
+ * Any positive `threshold` below `SIMPLE_MIN_SIGNER_THRESHOLD` is clamped up
+ * to that minimum; only `0` (or negative) opts out of enforcement entirely and
+ * is the documented backwards-compatibility escape hatch for legacy
+ * single-coordinator rounds.
+ */
+function meetsSignerThreshold(coordinatorNpubs: string[], threshold: number): boolean {
+  if (threshold <= 0) {
+    return true;
+  }
+
+  const effectiveThreshold = Math.max(SIMPLE_MIN_SIGNER_THRESHOLD, threshold);
+  const distinctCoordinators = new Set(
+    coordinatorNpubs.filter((npub) => npub.trim().length > 0),
+  );
+  return distinctCoordinators.size >= effectiveThreshold;
 }
 
 export function getShardCertificateCoordinatorNpub(coordinatorNsec: string): string | null {
