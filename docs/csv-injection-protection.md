@@ -81,3 +81,39 @@ Run tests:
 ```bash
 cd web && npx vitest run src/residentRegister.test.ts
 ```
+
+## Masterlist Interop Mode
+
+`parseMasterlistCsv()` — added as an additive parser mode — accepts the interop
+masterlist CSV format from the previous centralized solution (header
+`id,masterlist_no,email,phone,dob,country,status`).  The existing integer-mode
+`parseResidentCsv()` is unchanged.
+
+### Threat model
+
+The same CSV formula injection threat (CWE-1236) applies to the masterlist
+format: an attacker crafting `=WEBSERVICE(...)` in the country, dob, email,
+or phone fields could trigger formula execution when the roster is exported.
+
+### Mitigation
+
+`neutralizeCsvFormula()` is applied to email, phone, dob, and country at parse
+time — same neutralisation as the resident register mode.  `masterlist_no` is
+**not** neutralised because it is validated against a safe charset
+(`[A-Za-z0-9_-]{1,32}`) that excludes formula-prefix characters (=, +, -, @).
+
+### Testing
+
+The full `residentRegister.test.ts` suite covers 40 tests across both modes,
+including the 13 original neutralisation tests plus:
+
+- Doubled-quote known-answer (RFC-4180, e.g. `"He said ""hi"""`)
+- Embedded-comma quoted field (RFC-4180, e.g. `"France, Metropolitan"`)
+- Security: formula payloads in email are neutralised before validation
+- Security: masterlist_no with unsafe chars is rejected as a row error
+
+Run tests:
+
+```bash
+cd web && npx vitest run src/residentRegister.test.ts
+```
