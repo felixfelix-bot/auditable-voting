@@ -12,8 +12,14 @@ import { execSync } from "node:child_process";
  *
  * Resolution order:
  *   1. $E2E_PAGES_BASE_URL — explicit override (CI / local)
- *   2. git remote "origin" — derive `owner/repo` from the checkout
- *   3. Fallback — upstream repo (tidley/auditable-voting)
+ *   2. git remote "upstream" — if present (owner/repo of the authoritative repo)
+ *   3. git remote "origin" — derive `owner/repo` from the checkout
+ *   4. Fallback — upstream repo (tidley/auditable-voting)
+ *
+ * Preferring "upstream" over "origin" matters: contributors commonly clone the
+ * fork with `origin` = their fork, so deriving from `origin` alone would point
+ * the video spec at `felixfelix-bot.github.io` (the fork's Pages). The site
+ * that matters is the one owned by the authoritative repo.
  */
 export function resolvePagesBaseUrl(): string {
   const override = process.env.E2E_PAGES_BASE_URL;
@@ -21,21 +27,23 @@ export function resolvePagesBaseUrl(): string {
     return override.replace(/\/+$/, "");
   }
 
-  try {
-    const remote = execSync("git config --get remote.origin.url", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    // Accept https://github.com/OWNER/REPO[.git] and git@github.com:OWNER/REPO[.git]
-    const m = remote.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
-    if (m) {
-      const [, owner, repo] = m;
-      if (owner && repo) {
-        return `https://${owner}.github.io/${repo}`;
+  for (const remote of ["upstream", "origin"]) {
+    try {
+      const url = execSync(`git config --get remote.${remote}.url`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      // Accept https://github.com/OWNER/REPO[.git] and git@github.com:OWNER/REPO[.git]
+      const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
+      if (m) {
+        const [, owner, repo] = m;
+        if (owner && repo) {
+          return `https://${owner}.github.io/${repo}`;
+        }
       }
+    } catch {
+      // remote not configured — fall through to the next candidate.
     }
-  } catch {
-    // git remote unavailable — fall through to the default below.
   }
 
   return "https://tidley.github.io/auditable-voting";
