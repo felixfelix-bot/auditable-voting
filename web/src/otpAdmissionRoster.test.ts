@@ -2,13 +2,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   findIssuedOtpRecord,
+  findResidentNpubBinding,
   isOtpRedeemed,
   loadIssuedOtpRoster,
   loadRedeemedOtpNumbers,
+  loadResidentNpubBindings,
   markOtpRedeemed,
+  recordResidentNpubBinding,
   saveIssuedOtpRoster,
   upsertIssuedOtpRecord,
   type IssuedOtpRecord,
+  type ResidentNpubBinding,
 } from "./otpAdmissionRoster";
 
 const ELECTION_A = "election-a";
@@ -124,5 +128,75 @@ describe("otpAdmissionRoster redemption flags", () => {
     markOtpRedeemed(ELECTION_A, 101);
     expect(isOtpRedeemed(ELECTION_A, 101)).toBe(true);
     expect(isOtpRedeemed(ELECTION_B, 101)).toBe(false);
+  });
+});
+
+describe("otpAdmissionRoster resident→npub bindings", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  function binding(overrides: Partial<ResidentNpubBinding> = {}): ResidentNpubBinding {
+    return {
+      mastersListNumber: 101,
+      npub: "npub1abc",
+      boundAt: 1_700_000_000_000,
+      electionId: ELECTION_A,
+      ...overrides,
+    };
+  }
+
+  it("starts with no bindings", () => {
+    expect(loadResidentNpubBindings(ELECTION_A)).toEqual([]);
+  });
+
+  it("records and round-trips a resident→npub binding", () => {
+    recordResidentNpubBinding(binding());
+    expect(loadResidentNpubBindings(ELECTION_A)).toEqual([binding()]);
+  });
+
+  it("replaces a binding when the resident redeems again under a new npub", () => {
+    recordResidentNpubBinding(binding());
+    recordResidentNpubBinding(binding({ npub: "npub1def" }));
+    const bindings = loadResidentNpubBindings(ELECTION_A);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0].npub).toBe("npub1def");
+  });
+
+  it("adds distinct residents without dropping others", () => {
+    recordResidentNpubBinding(binding());
+    recordResidentNpubBinding(binding({ mastersListNumber: 102, npub: "npub2xyz" }));
+    expect(loadResidentNpubBindings(ELECTION_A)).toHaveLength(2);
+  });
+
+  it("keeps bindings scoped to their election", () => {
+    recordResidentNpubBinding(binding());
+    expect(loadResidentNpubBindings(ELECTION_A)).toHaveLength(1);
+    expect(loadResidentNpubBindings(ELECTION_B)).toEqual([]);
+  });
+
+  it("finds a binding by masters list number", () => {
+    recordResidentNpubBinding(binding({ mastersListNumber: 303, npub: "npub3303" }));
+    expect(findResidentNpubBinding(ELECTION_A, 303)?.npub).toBe("npub3303");
+    expect(findResidentNpubBinding(ELECTION_A, 404)).toBeUndefined();
+  });
+
+  it("drops malformed binding entries from untrusted storage", () => {
+    window.localStorage.setItem(
+      "otp-admission-binding:election-a",
+      JSON.stringify([
+        binding(),
+        binding({ mastersListNumber: 102, npub: "  " }),
+        binding({ mastersListNumber: -1, npub: "npub2neg" }),
+        { bogus: true },
+        null,
+        "junk",
+      ]),
+    );
+    expect(loadResidentNpubBindings(ELECTION_A)).toEqual([binding()]);
   });
 });
