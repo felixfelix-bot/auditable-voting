@@ -147,9 +147,9 @@ async function openInviteVotersFromReadiness(
   user: ReturnType<typeof userEvent.setup>,
   ui: ReturnType<typeof within>,
 ) {
-  const inviteButton = ui.getAllByRole("button", { name: /^Results & Voters:/i })[0];
+  const inviteButton = ui.getAllByRole("button", { name: /^Voters$/i })[0];
   if (!inviteButton) {
-    throw new Error("Results & Voters readiness button not found");
+    throw new Error("Voters nav button not found");
   }
   await user.click(inviteButton);
 }
@@ -1529,6 +1529,11 @@ vi.mock("./services/CoordinatorControlService", () => {
 
 describe("Simple round flow", () => {
   beforeEach(async () => {
+    // jsdom does not implement scrollIntoView; the coordinator shell's Voters
+    // nav calls it to scroll to the invite-voters section.
+    if (!HTMLElement.prototype.scrollIntoView) {
+      HTMLElement.prototype.scrollIntoView = () => {};
+    }
     class MockWebSocket extends EventTarget {
       static readonly CONNECTING = 0;
       static readonly OPEN = 1;
@@ -1627,7 +1632,7 @@ describe("Simple round flow", () => {
     const voterUi = within(voter.container);
 
     await user.click(voterUi.getByRole("tab", { name: /^Settings$/i }));
-    await user.click(coordinatorUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorUi.getByRole("button", { name: /^Settings$/i }));
     const voterRestoreInput = await voterUi.findByPlaceholderText("nsec1...");
     await user.clear(voterRestoreInput);
     await user.type(voterRestoreInput, voterNsec);
@@ -1638,7 +1643,7 @@ describe("Simple round flow", () => {
     await user.clear(coordinatorRestoreInput);
     await user.type(coordinatorRestoreInput, coordinatorNsec);
     await user.click(coordinatorUi.getByRole("button", { name: /^Restore identity$/i }));
-    await user.click(coordinatorUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorUi.getByRole("button", { name: /^Settings$/i }));
 
     await waitFor(() => {
       expect(voterUi.getByText("Identity restored from nsec.")).toBeTruthy();
@@ -1720,7 +1725,7 @@ describe("Simple round flow", () => {
 
     await waitFor(() => {
       expect(coordinatorUi.queryByRole("tab", { name: /^Questionnaire$/i })).toBeNull();
-      expect(coordinatorUi.getAllByRole("button", { name: /^Title & Description:/i }).length).toBeGreaterThan(0);
+      expect(coordinatorUi.getAllByRole("button", { name: /^Edit$/i }).length).toBeGreaterThan(0);
       expect(coordinatorUi.queryByRole("tab", { name: /^Session$/i })).toBeNull();
       expect(coordinatorUi.queryByRole("tab", { name: /^Audit proxy$/i })).toBeNull();
       expect(coordinatorUi.queryByText(/Live prompt: Legacy cached prompt/i)).toBeNull();
@@ -1896,8 +1901,8 @@ describe("Simple round flow", () => {
 
     await user.click(leadUi.getByRole("button", { name: /New identity/i }));
     await user.click(subUi.getByRole("button", { name: /New identity/i }));
-    await user.click(leadUi.getByRole("tab", { name: /^Settings$/i }));
-    await user.click(subUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(leadUi.getByRole("button", { name: /^Settings$/i }));
+    await user.click(subUi.getByRole("button", { name: /^Settings$/i }));
 
     await waitFor(() => {
       expect(lead.container.querySelector("code.simple-identity-code")?.textContent?.startsWith("npub1")).toBe(true);
@@ -1939,8 +1944,8 @@ describe("Simple round flow", () => {
     await user.click(coordinatorOneUi.getByRole('button', { name: /New identity/i }));
     await user.click(coordinatorTwoUi.getByRole('button', { name: /New identity/i }));
     await requestNewSimpleIdentity("voter");
-    await user.click(coordinatorOneUi.getByRole("tab", { name: /^Settings$/i }));
-    await user.click(coordinatorTwoUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorOneUi.getByRole("button", { name: /^Settings$/i }));
+    await user.click(coordinatorTwoUi.getByRole("button", { name: /^Settings$/i }));
     await user.click(voterOneUi.getByRole("tab", { name: /^Settings$/i }));
     await user.click(voterTwoUi.getByRole("tab", { name: /^Settings$/i }));
 
@@ -1967,8 +1972,8 @@ describe("Simple round flow", () => {
 
     expect(coordinatorOneUi.queryByRole("tab", { name: /^Questionnaire$/i })).toBeNull();
     expect(coordinatorTwoUi.queryByRole("tab", { name: /^Questionnaire$/i })).toBeNull();
-    expect(coordinatorOneUi.getAllByRole("button", { name: /^Title & Description:/i }).length).toBeGreaterThan(0);
-    expect(coordinatorTwoUi.getAllByRole("button", { name: /^Title & Description:/i }).length).toBeGreaterThan(0);
+    expect(coordinatorOneUi.getAllByRole("button", { name: /^Edit$/i }).length).toBeGreaterThan(0);
+    expect(coordinatorTwoUi.getAllByRole("button", { name: /^Edit$/i }).length).toBeGreaterThan(0);
     expect(coordinatorOneUi.queryByRole("tab", { name: /^Audit proxy$/i })).toBeNull();
     expect(coordinatorTwoUi.queryByRole("tab", { name: /^Audit proxy$/i })).toBeNull();
     expect(voterOneUi.getByRole("tab", { name: /^Vote$/i })).toBeTruthy();
@@ -1996,8 +2001,8 @@ describe("Simple round flow", () => {
     await user.click(coordinatorTwoUi.getByRole("button", { name: /New identity/i }));
     await requestNewSimpleIdentity("voter");
 
-    await user.click(coordinatorOneUi.getByRole("tab", { name: /^Settings$/i }));
-    await user.click(coordinatorTwoUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorOneUi.getByRole("button", { name: /^Settings$/i }));
+    await user.click(coordinatorTwoUi.getByRole("button", { name: /^Settings$/i }));
     await user.click(voterUi.getByRole("tab", { name: /^Settings$/i }));
 
     await waitFor(() => {
@@ -2033,8 +2038,8 @@ describe("Simple round flow", () => {
     await user.click(coordinatorTwoUi.getByRole("button", { name: /New identity/i }));
     await requestNewSimpleIdentity("voter");
 
-    await user.click(coordinatorOneUi.getByRole("tab", { name: /^Settings$/i }));
-    await user.click(coordinatorTwoUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorOneUi.getByRole("button", { name: /^Settings$/i }));
+    await user.click(coordinatorTwoUi.getByRole("button", { name: /^Settings$/i }));
     await user.click(voterUi.getByRole("tab", { name: /^Settings$/i }));
 
     await waitFor(() => {
@@ -2066,7 +2071,7 @@ describe("Simple round flow", () => {
 
     await user.click(coordinatorUi.getByRole('button', { name: /New identity/i }));
     await requestNewSimpleIdentity("voter");
-    await user.click(coordinatorUi.getByRole("tab", { name: /^Settings$/i }));
+    await user.click(coordinatorUi.getByRole("button", { name: /^Settings$/i }));
     await user.click(voterUi.getByRole("tab", { name: /^Settings$/i }));
 
     await waitFor(() => {
