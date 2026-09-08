@@ -63,13 +63,21 @@ the manual path available as a fallback.
   distributed out of band and may sit before the resident enters them. The
   10-minute interactive TTL is unchanged for in-app verification.
 
-## Cost and limits (TODO for AV-DELIVERY-1b)
+## Cost and limits (AV-DELIVERY-1b)
 
 - Email sending costs 100 sats per email (Cashu token or Lightning quote).
 - The service caps sending at 100 emails/day/user.
-- Cost math and invoice-expiry guidance will be completed in AV-DELIVERY-1b.
+- The coordinator sending script `scripts/otp-send-email.mjs` is shipped in
+  this repo (see @ docs/otp-delivery.md Testing).
 
 ## Testing
+
+The coordinator script has its own deterministic offline suite (no network,
+stubbed fetch mode):
+
+```bash
+node --test scripts/test/otp-send-email.test.mjs
+```
 
 ```bash
 cd web && npx vitest run src/otpDelivery/
