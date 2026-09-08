@@ -34,6 +34,11 @@ export default defineConfig(({ mode }) => ({
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
     environment: "node",
+    // Heavy protocol/runtime tests (questionnaireOptionA.runtime, BlindDm,
+    // simpleRelayLoad, scale harness) build thousands of relay events and can
+    // exceed the 5s default under suite load on 2-core CI runners. 60s gives
+    // them room without hiding genuine hangs.
+    testTimeout: 60_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

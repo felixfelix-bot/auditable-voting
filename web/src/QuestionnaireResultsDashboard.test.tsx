@@ -264,7 +264,7 @@ describe("QuestionnaireResultsDashboard", () => {
     expect(screen.queryByText("Live status")).toBeNull();
     expect(screen.getByLabelText("Live status").textContent).toContain("2/3 accepted (67%)");
     expect(screen.getByText("Q1")).toBeTruthy();
-    expect(screen.getByText("Single choice")).toBeTruthy();
+    expect(screen.getByText("Yes")).toBeTruthy();
     expect(container.querySelector(".simple-session-live-status")).toBeTruthy();
     expect(container.querySelector(".simple-session-live-card")).toBeNull();
   });

@@ -2166,7 +2166,10 @@ describe("QuestionnaireOptionAVoterPanel DM retrieval", () => {
     render(<QuestionnaireOptionAVoterPanel announcedQuestionnaireIds={[definition.questionnaireId]} localVoterNpub={localVoterNpub} />);
     await user.click(await screen.findByRole("button", { name: "Start" }));
 
-    expect(await screen.findByText(/assigned to the main questions only/i)).toBeTruthy();
+    // Scope-restricted ballot (allowedScopes ["0"]): only the main question
+    // renders; the North district question (scope "group_north") is filtered
+    // out by the panel. (There is no literal "assigned to the main questions
+    // only" copy in the panel — scope is communicated by which questions show.)
     expect(screen.getByText("Main question")).toBeTruthy();
     expect(screen.queryByText("North district question")).toBeNull();
   });
