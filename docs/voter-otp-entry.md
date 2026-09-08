@@ -25,6 +25,7 @@ Two keys per election, both namespace-prefixed and stored under the raw
 |---|---|
 | `otp-admission-roster:<electionId>` | `IssuedOtpRecord[]` — `{ mastersListNumber, saltHash, issuedAt, electionId }` |
 | `otp-admission-redeemed:<electionId>` | `number[]` — redeemed masters-list numbers (the admission flag) |
+| `otp-admission-binding:<electionId>` | `ResidentNpubBinding[]` — `{ mastersListNumber, npub, boundAt, electionId }` |
 
 **Never plaintext:** only the salted `saltHex:hashHex` string produced by
 `hashOtp()` is stored. A `localStorage` compromise cannot recover a resident's
@@ -45,12 +46,15 @@ enters their code.
    does not need to know the election id up front.
 3. It checks expiry (`ADMISSION_TTL_MS`, 24 hours), then verifies with
    `verifyOtp()` (constant-time comparison, per-hash rate limiting).
-4. On success it **marks the code redeemed** and reports the **admission flag**
-   via `onAdmitted`. The redeemed flag persists, so the code cannot be reused.
+4. On success it **marks the code redeemed**, records a **resident → voter-npub
+   binding** (when the voter's npub is known), and reports the **admission
+   flag** via `onAdmitted`. The redeemed flag persists, so the code cannot be
+   reused.
 
-The admission flag is the persisted redeemed state. It is the gate that the
-ballot and private-invite flows consult; `onAdmitted` is the hook the parent
-panel uses to gate access.
+The admission flag is the persisted redeemed state. `SimpleUiApp` consumes it
+through `onAdmitted`: until a resident redeems a valid code the ballot and
+private-invite panel stays hidden, and once admitted it unlocks for that
+browser session.
 
 ## Coordinator wiring
 
@@ -59,13 +63,15 @@ panel uses to gate access.
 code (the coordinator's "test the code" form) marks it redeemed and surfaces
 the admission in the coordinator status.
 
-**Resident → voter-npub binding is a documented gap.** The existing
-`admitVotersToRoster` / whitelist machinery is keyed by voter `npub`, while the
-OTP roster is keyed by masters-list number. A resident has no npub until they
-connect as a voter, so the two cannot be joined inside this browser-local,
-server-free flow. The persisted redeemed flag is the admission gate both sides
-consult; binding a resident to their voter npub (so the coordinator can push
-the admission into `admitVotersToRoster`) is a follow-up task.
+**Admission gates voting on both sides.** When a resident redeems their code
+the voter side persists a resident → voter-npub binding
+(`recordResidentNpubBinding`). The coordinator reads the bindings for the
+current election, filters them to those whose code is actually redeemed, and
+pushes the resulting npubs into the npub-keyed whitelist via
+`admitVotersToRoster(…, "otp")`. That sync runs when the coordinator tab loads
+or the election/identity changes, on every `storage` event that changes the
+binding or redeemed key (so a redemption in a neighbouring voter tab is picked
+up live), and when the coordinator verifies a code themselves.
 
 ## Out of scope
 
@@ -79,7 +85,9 @@ is not touched.
 cd web && npx vitest run src/otpAdmissionRoster.test.ts src/ResidentOtpEntry.test.tsx src/ResidentOtpAdmission.test.tsx
 ```
 
-Coverage: roster persistence/redemption round-trips and malformed-entry
-handling; voter entry rendering, incomplete entry, no-issued-code, success +
-redemption + `onAdmitted`, incorrect code, rate-limit lockout, expiry, and
-cross-election lookup.
+Coverage: roster persistence/redemption round-trips, resident→npub binding
+round-trips, and malformed-entry handling; voter entry rendering, incomplete
+entry, no-issued-code, success + redemption + `onAdmitted` + npub binding,
+incorrect code, rate-limit lockout, expiry, and cross-election lookup;
+coordinator-side persist-on-issue (never plaintext) and verify-marks-redeemed
++ `onAdmitted`.
