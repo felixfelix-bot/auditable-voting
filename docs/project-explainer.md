@@ -77,7 +77,7 @@ Observers can independently check:
 - whether the published tally matches the accepted public ballots
 - encrypted answer details automatically in Organiser when the local organiser key is available, or in Observer when the matching organiser `nsec` is deliberately entered
 
-While a questionnaire is live, provisional answers are shown as live. A submitted public ballot is shown as published immediately because the voter cannot change it. The final public result summary remains the auditable closing record.
+While a questionnaire is live, provisional answers are shown as live. A submitted public ballot is shown as published immediately because the voter cannot change it. The final public result summary remains the auditable closing record. Results default to a plain, human-readable view — total counts and a per-question demographic breakdown (such as community/country tallies) — with the verifiable re-foldable result hash and downloadable CSV pack kept behind a "Verification pack (auditors)" link for auditors. Both presentations derive from the same published numbers.
 
 ## Trust model
 

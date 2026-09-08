@@ -608,6 +608,105 @@ describe("QuestionnaireResultsDashboard", () => {
     expect(screen.getByText("104-104")).toBeTruthy();
     expect(screen.getByText("submission_104")).toBeTruthy();
   });
+
+  it("renders human-readable counts and a demographic breakdown by default", () => {
+    const { container } = render(
+      <QuestionnaireResultsDashboard
+        questionnaire={{
+          questionnaireId: "q_human_readable",
+          title: "Human-readable results",
+          questions: [
+            {
+              questionId: "community",
+              type: "multiple_choice",
+              prompt: "Which community are you in?",
+              required: true,
+              multiSelect: false,
+              options: [
+                { optionId: "north", label: "North" },
+                { optionId: "south", label: "South" },
+                { optionId: "east", label: "East" },
+              ],
+            },
+          ],
+        }}
+        questionSummaries={[
+          {
+            questionId: "community",
+            answerType: "multiple_choice",
+            optionCounts: { north: 2, south: 7, east: 4 },
+          },
+        ]}
+        responseDetails={[]}
+        displayValidCount={13}
+        displayInvalidCount={0}
+        publishedTotalsAvailable
+        coordinatorText="Organiser test"
+        publishedAtLabel="Published"
+      />,
+    );
+
+    const atAGlance = screen.getByLabelText("Results at a glance");
+    expect(atAGlance.textContent).toContain("13");
+    expect(atAGlance.textContent).toContain("accepted");
+    expect(atAGlance.textContent).toContain("Which community are you in?");
+    // Demographic labels are rendered as plain, human-readable text.
+    expect(atAGlance.textContent).toContain("South");
+    expect(atAGlance.textContent).toContain("North");
+    expect(atAGlance.textContent).toContain("East");
+    // No cryptographic artefact leaks into the default presentation.
+    expect(atAGlance.textContent).not.toMatch(/[0-9a-f]{64}/i);
+    expect(container.querySelector(".simple-human-results")).toBeTruthy();
+  });
+
+  it("keeps the verifiable pack behind an auditor link, collapsed by default", async () => {
+    const user = userEvent.setup();
+    const resultHash = "a".repeat(64);
+    render(
+      <QuestionnaireResultsDashboard
+        questionnaire={{
+          questionnaireId: "q_verification",
+          title: "Verification",
+          questions: [
+            {
+              questionId: "q1",
+              type: "yes_no",
+              prompt: "Ready?",
+              required: true,
+            },
+          ],
+          resultPack: {
+            url: "https://example.invalid/results.csv",
+            sha256: "b".repeat(64),
+            size: 1234,
+            type: "text/csv",
+            compression: "none",
+            uploadedAt: 1_774_000_000,
+            mirrors: [],
+          },
+        }}
+        questionSummaries={[
+          { questionId: "q1", answerType: "yes_no", yesCount: 1, noCount: 0 },
+        ]}
+        responseDetails={[]}
+        displayValidCount={1}
+        coordinatorText="Organiser test"
+        publishedAtLabel="Published"
+        resultHash={resultHash}
+      />,
+    );
+
+    const resultsToggle = screen.getByRole("button", { name: "Results" });
+    const verificationToggle = screen.getByRole("button", { name: "Verification pack (auditors)" });
+    // Human-readable results are open by default; the proof is behind a link.
+    expect(resultsToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(verificationToggle.getAttribute("aria-expanded")).toBe("false");
+
+    await user.click(verificationToggle);
+    expect(verificationToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(resultHash)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Download result pack (CSV)" })).toBeTruthy();
+  });
 });
 
 function makeResponseDetail(index: number): QuestionnaireResultsDashboardResponseDetail {
