@@ -67,7 +67,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (!a.startsWith("--")) continue;
     const key = a.slice(2);
-    if (["nsec", "csv", "subject", "api", "ledger", "results"].includes(key)) {
+    if (["nsec", "csv", "subject", "api", "ledger", "results", "cashu-token"].includes(key)) {
       opts[key] = argv[++i];
     } else if (key === "dry-run") {
       opts.dryRun = true;
@@ -159,7 +159,7 @@ async function nomailSession(api, nsecRaw) {
   const skBytes = parseNsec(nsecRaw);
   // In stub/test mode (TEST_API_STUB=1) skip all network: the deterministic
   // test harness only needs pubkey derivation, never a real challenge/send.
-  if (process.env.TEST_API_STUB === "1") return getPublicKey(skBytes);
+  if (process.env.TEST_API_STUB === "1") return { pubkey: getPublicKey(skBytes), sessionCookie: "" };
   const { nonce } = await postJson(api, "/api/auth/challenge", {});
   const unsigned = {
     kind: 1,
@@ -168,15 +168,18 @@ async function nomailSession(api, nsecRaw) {
     content: nonce,
   };
   const signed = finalizeEvent(unsigned, skBytes);
-  await postJson(api, "/api/auth/verify", { event: signed });
-  // The session cookie is set on the verify response. Node's fetch does not
-  // expose Set-Cookie for cross-origin by default; fall back to re-auth per
-  // send is acceptable for small batches. We return the pubkey for logging.
-  return getPublicKey(skBytes);
+  const ver = await postJson(api, "/api/auth/verify", { event: signed });
+  // Capture the session cookie from the Set-Cookie response header.
+  // The verify endpoint sets __Host-session=...; Path=/; Secure; HttpOnly; SameSite=Strict
+  // Node's fetch doesn't expose cookies across origins automatically, so we
+  // read the raw Set-Cookie header and split the value portion.
+  const rawCookie = ver.res.headers.getSetCookie?.()?.[0] || ver.res.headers.get("set-cookie") || "";
+  const sessionCookie = rawCookie.split(";")[0]; // first segment = key=value
+  return { pubkey: getPublicKey(skBytes), sessionCookie };
 }
 
-async function sendEmail(api, sessionCookie, to, subject, text) {
-  const body = { to, subject, text };
+async function sendEmail(api, sessionCookie, to, subject, text, cashuToken) {
+  const body = { to, subject, text, cashuToken };
   const headers = { "content-type": "application/json" };
   if (sessionCookie) headers.cookie = sessionCookie;
   const res = await fetch(api + "/api/send", { method: "POST", headers, body: JSON.stringify(body) });
@@ -212,14 +215,15 @@ async function runBatch(opts) {
   const results = [];
   let okCount = 0, failCount = 0, skipCount = 0;
 
-  // Authenticate once up front (we can't read the HttpOnly cookie cross-origin
-  // from Node fetch; each send falls back to its own session if needed).
-  let senderPubkey = null;
+  // Authenticate once up front, capture session cookie for batch sends.
+  let senderInfo = null;
   try {
-    senderPubkey = await nomailSession(opts.api, opts.nsec);
+    senderInfo = await nomailSession(opts.api, opts.nsec);
   } catch (e) {
     console.error(`WARN: initial auth failed (${e.message}) — will retry per send.`);
   }
+  const senderCookie = senderInfo?.sessionCookie || "";
+  const senderPubkey = senderInfo?.pubkey || "";
 
   for (const row of rows) {
     if (ledger[row.master] && ledger[row.master].ok) {
@@ -234,7 +238,7 @@ async function runBatch(opts) {
       if (opts.dryRun) {
         results.push({ master: row.master, ok: true, detail: `dry-run otp=${otp}` });
       } else {
-        await sendEmail(opts.api, null, row.email, subject, text);
+        await sendEmail(opts.api, senderCookie, row.email, subject, text, opts.cashuToken);
         results.push({ master: row.master, ok: true, detail: `sent otp=${otp}` });
       }
       ledger[row.master] = { ok: true, otp, email: row.email, sentAt: new Date().toISOString() };
@@ -268,6 +272,7 @@ Options:
   --api <url>      nomail/cashu.email base (default: ${API_DEFAULT})
   --ledger <path>  Resume ledger JSON (skips already-sent rows on re-run)
   --results <path> Results CSV output (default: otp-results.csv)
+  --cashu-token <token>  Ecash cashuB token to pay 100-sat postage (spent on send)
   --dry-run        Generate OTPs but do not send
   --help           Show this help
 
