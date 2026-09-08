@@ -148,3 +148,32 @@ serialisation guards, and empty-key rejection.
 ```bash
 cd web && npx vitest run src/electionRoster.test.ts
 ```
+
+## Roster-bound issuance gate (one credential per masterlist_no)
+
+`web/src/rosterBoundIssuance.ts` wires the roster into the blind-token
+issuance path for closed elections.  It exposes a `RosterBoundIssuanceGate`
+that:
+
+- `authorize(masterlistNo)` / `issue(masterlistNo)` refuse a `masterlist_no`
+  that is not in the active eligible set (`not_on_roster`) and enforce one
+  credential per `masterlist_no` per election (`credential_already_issued`).
+- records only the **keyed commitment** of each issued `masterlist_no` — never
+  the plaintext value — so a published issuance ledger cannot be reversed into
+  voter identities, and cannot be linked to the voter's later ballot.
+- composes with the submission-side token-nullifier dedup: the roster proves
+  "you're in", the blind token proves "you voted once", and neither links the
+  ballot to the voter.
+
+Issued state must be serialized with `serializeIssuedCommitments(gate)` (a
+JSON-safe array), not the raw `Set`, which has no JSON form.
+
+### Testing
+
+`rosterBoundIssuance.test.ts` covers 22 tests: eligibility delegation,
+one-credential-per-entry enforcement, per-election scoping, PII
+serialisation guards, and serialize/restore round-trips.
+
+```bash
+cd web && npx vitest run src/rosterBoundIssuance.test.ts
+```

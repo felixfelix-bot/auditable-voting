@@ -212,7 +212,38 @@ Then:
 
 This rule is implemented in the client transport layer and covered by regression tests.
 
-## 8. Verifier expectations
+## 8. Roster-bound issuance (closed elections)
+
+A **closed election** (`eligibilityMode: "allowlist"`) binds ballot-credential
+issuance to a per-election roster map (`web/src/electionRoster.ts`). The
+roster-bound issuance gate (`web/src/rosterBoundIssuance.ts`) wires that roster
+into the blind-token issuance path and enforces **one credential per
+`masterlist_no` per election**.
+
+The two guarantees are orthogonal and combined:
+
+1. **The roster proves "you're in".** `authorize(masterlistNo)` /
+   `issue(masterlistNo)` refuse any `masterlist_no` not in the active eligible
+   set — a non-roster claimant cannot obtain a credential
+   (`not_on_roster`).
+2. **The blind token proves "you voted once".** The gate records the keyed
+   commitment of each `masterlist_no` for which a credential was issued and
+   refuses a second issuance (`credential_already_issued`). This issuance-side
+   dedup composes with the submission-side nullifier dedup in §7: even a valid
+   credential cannot be spent twice.
+
+Neither layer links the ballot to the voter. The gate stores only the keyed
+commitment of `masterlist_no` — an HMAC under the per-election secret that is
+cryptographically unrelated to the `tokenCommitment` carried in the `6424`
+response. The coordinator may publish "commitment X received a credential"
+without revealing which ballot that voter later cast. Serialization of issuance
+state must use `serializeIssuedCommitments(gate)` (a JSON-safe array), never
+the raw `Set`, which has no JSON form.
+
+An **open election** (`eligibilityMode: "open"`) does not consult the gate:
+issuance falls back to the current behaviour with no per-roster-entry dedup.
+
+## 9. Verifier expectations
 
 Public verifier should be able to check:
 
@@ -229,7 +260,7 @@ Organiser-side verification (especially in encrypted mode) additionally checks:
 - required answers
 - option validity, rank minimums, and free-text length limits
 
-## 9. Private bundle transport
+## 10. Private bundle transport
 
 Blind request and blind issuance DMs are ordinary JSON envelopes by default. Large bundled envelopes may be wrapped before NIP-17 encryption as:
 
@@ -242,7 +273,7 @@ Blind request and blind issuance DMs are ordinary JSON envelopes by default. Lar
 
 Decoders must accept both the plain JSON bundle envelope and the compressed wrapper. After decompression, the inner envelope is parsed exactly as if it had been received directly, and the inner `type` must match `innerType`. Compression is applied only to the private JSON envelope before gift wrapping; encrypted NIP-17 events are not recompressed.
 
-## 10. Relay compatibility notes
+## 11. Relay compatibility notes
 
 For reliability on public relays:
 
@@ -250,7 +281,7 @@ For reliability on public relays:
 - use broad kind fetch with local `questionnaireId` reconciliation fallback where required
 - keep transcript-carrying questionnaire kinds outside Nostr replaceable and parameterised-replaceable ranges; current implementation kinds are regular custom events so repeated rounds and submissions are not displaced by newer events from the same organiser or voter key
 
-## 11. Normative summary
+## 12. Normative summary
 
 1. Questionnaire definition must be public.
 2. Response admission must be deterministic.

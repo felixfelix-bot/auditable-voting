@@ -121,3 +121,14 @@ turns the active entries into a per-election `Map<masterlist_no_hash, active>`:
 This mirrors the OTP service's threat model (Section 2): raw identity and
 contact data are stored only as irreversible keyed commitments, never in
 plaintext.
+
+### Roster-bound issuance (one credential per masterlist_no)
+
+For a closed election, `web/src/rosterBoundIssuance.ts` layers a
+one-credential-per-entry gate on top of the roster: `authorize(masterlistNo)`
+/ `issue(masterlistNo)` refuse a non-roster claimant (`not_on_roster`) and a
+second issuance for the same `masterlist_no` (`credential_already_issued`).
+The gate stores only keyed commitments, never plaintext `masterlist_no`, so the
+issuance ledger cannot be linked back to a voter's ballot. This composes with
+the blind-token nullifier dedup: the roster proves "you're in", the blind token
+proves "you voted once".
