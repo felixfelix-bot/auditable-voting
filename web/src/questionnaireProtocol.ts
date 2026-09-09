@@ -12,6 +12,7 @@ import {
   normalizeQuestionnaireRelays,
   questionnaireRelaysForMetadata,
 } from "./questionnaireRelays";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 
 /**
  * Conditional display: this question is only shown if the condition is met.
@@ -707,6 +708,14 @@ export function validateQuestionnaireResponsePayload(input: {
   const byQuestionId = new Map(definition.questions.map((question) => [question.questionId, question]));
   const seenAnswers = new Set<string>();
 
+  // Build the answered map and question map for conditional (showIf) evaluation.
+  const answeredMap = new Map<string, QuestionnaireResponseAnswer>(
+    payload.answers.map((answer) => [answer.questionId, answer]),
+  );
+  const questionMap = new Map<string, QuestionnaireQuestion>(
+    definition.questions.map((question) => [question.questionId, question]),
+  );
+
   for (const answer of payload.answers) {
     const question = byQuestionId.get(answer.questionId);
     if (!question) {
@@ -718,6 +727,11 @@ export function validateQuestionnaireResponsePayload(input: {
       continue;
     }
     seenAnswers.add(answer.questionId);
+
+    // Conditional display: an answer for a question whose showIf is unmet is invalid.
+    if (!shouldShowQuestion(question, answeredMap, questionMap)) {
+      errors.push(`answer_for_hidden_question:${answer.questionId}`);
+    }
 
     if (question.type === "yes_no") {
       if (answer.answerType !== "yes_no") {
@@ -782,6 +796,10 @@ export function validateQuestionnaireResponsePayload(input: {
   }
 
   for (const question of definition.questions) {
+    // A required question whose showIf is unmet is hidden and must not be required.
+    if (!shouldShowQuestion(question, answeredMap, questionMap)) {
+      continue;
+    }
     const rankMinimumMissing = question.type === "rank"
       && clampRankMinimum(question) > 0
       && !seenAnswers.has(question.questionId);

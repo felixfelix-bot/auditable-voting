@@ -551,4 +551,111 @@ describe("questionnaireProtocol", () => {
     const result = validateQuestionnaireDefinition(buildDefinition());
     expect(result.valid).toBe(true);
   });
+
+  // --- F2-T5: Conditional question response validation ---
+
+  it("accepts a response that omits a hidden required question (unmet showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: true,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_hidden_required",
+        submittedAt: 1712537200,
+        answers: [{ questionId: "q1", answerType: "yes_no", value: false }],
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).not.toContain("missing_required_answer:q2");
+  });
+
+  it("rejects a response that answers a hidden question (unmet showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_hidden_answer",
+        submittedAt: 1712537200,
+        answers: [
+          { questionId: "q1", answerType: "yes_no", value: false },
+          { questionId: "q2", answerType: "free_text", text: "should not be here" },
+        ],
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("answer_for_hidden_question:q2");
+  });
+
+  it("accepts a response that answers a visible conditional question (met showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: true,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_visible_required",
+        submittedAt: 1712537200,
+        answers: [
+          { questionId: "q1", answerType: "yes_no", value: true },
+          { questionId: "q2", answerType: "free_text", text: "It was great" },
+        ],
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
 });
