@@ -3,13 +3,14 @@ import { generateSecretKey, nip19, type NostrEvent } from "nostr-tools";
 import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQuestionnaireReadRelays, parseQuestionnaireDefinitionEvent, parseQuestionnaireResponseEnvelope, parseQuestionnaireStateEvent, publishEncryptedQuestionnaireResponse, queryQuestionnaireEvents, QUESTIONNAIRE_DEFINITION_KIND, QUESTIONNAIRE_RESPONSE_PRIVATE_KIND, QUESTIONNAIRE_RESULT_SUMMARY_KIND, QUESTIONNAIRE_STATE_KIND, subscribeQuestionnaireEventKinds } from "./questionnaireNostr";
 import { formatQuestionnaireStateLabel, formatQuestionnaireTokenStatusLabel, parseQuestionnaireResultSummaryEvent, selectLatestQuestionnaireDefinition, selectLatestQuestionnaireState } from "./questionnaireRuntime";
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
-import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireResponseAnswer, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
+import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireQuestion, type QuestionnaireResponseAnswer, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
 import TokenFingerprint from "./TokenFingerprint";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { resolveQuestionnaireResponderNpub } from "./questionnaireResponderIdentity";
 import QuestionnaireOptionAVoterPanel from "./QuestionnaireOptionAVoterPanel";
 import { hasVoterInviteContextInUrl } from "./questionnaireInvite";
 import { UiButton, UiSelect, UiTextArea } from "./ui/DesignLayer";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 
 const RESTORED_QUESTIONNAIRE_IDS_STORAGE_KEY = "voter.restored-questionnaire-ids.v1";
 const PARTICIPATION_HISTORY_STORAGE_KEY = "voter.questionnaire-participation-history.v1";
@@ -394,6 +395,27 @@ function buildResponseAnswers(definition: QuestionnaireDefinition, answerState: 
   }
 
   return answers;
+}
+
+function buildAnsweredMap(definition: QuestionnaireDefinition, answerState: QuestionnaireAnswerState): Map<string, QuestionnaireResponseAnswer> {
+  const answers = buildResponseAnswers(definition, answerState);
+  const map = new Map<string, QuestionnaireResponseAnswer>();
+  for (const answer of answers) {
+    map.set(answer.questionId, answer);
+  }
+  return map;
+}
+
+function buildVisibleResponseAnswers(definition: QuestionnaireDefinition, answerState: QuestionnaireAnswerState): QuestionnaireResponseAnswer[] {
+  const answeredMap = buildAnsweredMap(definition, answerState);
+  const questionMap = new Map(definition.questions.map((question) => [question.questionId, question]));
+  return buildResponseAnswers(definition, answerState).filter((answer) => {
+    const question = questionMap.get(answer.questionId);
+    if (!question) {
+      return false;
+    }
+    return shouldShowQuestion(question, answeredMap, questionMap);
+  });
 }
 
 function parseLatestResultSummary(events: Awaited<ReturnType<typeof fetchQuestionnaireEvents>>): QuestionnaireResultSummary | null {
@@ -1135,6 +1157,14 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
   }, [definition, responseLocked, state, submitInFlight, tokenStatus]);
   const selectedQuestionnaireOptions = selectorEntries.map((entry) => entry.questionnaireId);
   const selectedQuestionnaireEntry = selectorEntries.find((entry) => entry.questionnaireId === questionnaireId) ?? null;
+  const answeredMap = useMemo(
+    () => (definition ? buildAnsweredMap(definition, answerState) : new Map<string, QuestionnaireResponseAnswer>()),
+    [definition, answerState],
+  );
+  const questionMap = useMemo(
+    () => (definition ? new Map(definition.questions.map((question) => [question.questionId, question])) : new Map<string, QuestionnaireQuestion>()),
+    [definition],
+  );
 
   useEffect(() => {
     setResponsePipelineDiagnostics((current) => ({
@@ -1324,7 +1354,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
       questionnaireId: definition.questionnaireId,
       responseId,
       submittedAt: nowUnix(),
-      answers: buildResponseAnswers(definition, answerState),
+      answers: buildVisibleResponseAnswers(definition, answerState),
     };
     setResponsePipelineDiagnostics((current) => ({
       ...current,
@@ -1662,6 +1692,9 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
       {definition ? (
         <div className='simple-questionnaire-voter-list'>
           {definition.questions.map((question, index) => {
+            if (!shouldShowQuestion(question, answeredMap, questionMap)) {
+              return null;
+            }
             const questionPrompt = question.prompt.trim() || "Untitled question";
             const requirementLabel = question.required ? "Required" : "Optional";
             if (question.type === "yes_no") {
