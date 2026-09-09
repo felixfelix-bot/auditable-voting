@@ -11,6 +11,7 @@ import {
   validateQuestionnaireDefinition,
   questionnaireCredentialsPerVoter,
   type QuestionnaireDefinition,
+  type LocalisableText,
   type QuestionnairePublishedResponseRef,
   type QuestionnaireQuestion,
   type QuestionnaireResponseAnswer,
@@ -20,6 +21,7 @@ import {
   type QuestionnaireVoterGroup,
   type QuestionCondition,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import {
@@ -251,7 +253,7 @@ function sameStringSet(left: string[], right: string[]) {
   return leftSet.size === rightSet.size && [...leftSet].every((entry) => rightSet.has(entry));
 }
 
-function createYesNoQuestion(questionId: string, prompt = "", required = true): QuestionnaireQuestionDraft {
+function createYesNoQuestion(questionId: string, prompt: LocalisableText = "", required = true): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "yes_no",
@@ -316,7 +318,7 @@ function alignQuestionBallotGroups(questions: QuestionnaireQuestionDraft[]) {
   });
 }
 
-function createMultipleChoiceQuestion(questionId: string, prompt = "", required = true): QuestionnaireQuestionDraft {
+function createMultipleChoiceQuestion(questionId: string, prompt: LocalisableText = "", required = true): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "multiple_choice",
@@ -331,7 +333,7 @@ function createMultipleChoiceQuestion(questionId: string, prompt = "", required 
   };
 }
 
-function createRankQuestion(questionId: string, prompt = "", minimumRanked = 0): QuestionnaireQuestionDraft {
+function createRankQuestion(questionId: string, prompt: LocalisableText = "", minimumRanked = 0): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "rank",
@@ -355,7 +357,7 @@ function createNextOption(options: Array<{ optionId: string }>) {
   return { optionId: `option_${nextIndex}`, label: `Option ${nextIndex}` };
 }
 
-function createFreeTextQuestion(questionId: string, prompt = "", required = false): QuestionnaireQuestionDraft {
+function createFreeTextQuestion(questionId: string, prompt: LocalisableText = "", required = false): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "free_text",
@@ -451,14 +453,14 @@ function deriveNextQuestionId(current: QuestionnaireQuestionDraft[]) {
 }
 
 function isQuestionDraftValid(question: QuestionnaireQuestionDraft): boolean {
-  if (!question.prompt.trim()) {
+  if (!resolveLocalised(question.prompt, "en").trim()) {
     return false;
   }
   if (question.type === "multiple_choice") {
     if (question.options.length < 2) {
       return false;
     }
-    return question.options.every((option) => option.label.trim().length > 0);
+    return question.options.every((option) => resolveLocalised(option.label, "en").trim().length > 0);
   }
   if (question.type === "rank") {
     if (question.options.length < 2) {
@@ -467,7 +469,7 @@ function isQuestionDraftValid(question: QuestionnaireQuestionDraft): boolean {
     if (!Number.isFinite(question.minimumRanked) || question.minimumRanked < 0 || question.minimumRanked > question.options.length) {
       return false;
     }
-    return question.options.every((option) => option.label.trim().length > 0);
+    return question.options.every((option) => resolveLocalised(option.label, "en").trim().length > 0);
   }
   if (question.type === "free_text") {
     return Number.isFinite(question.maxLength) && question.maxLength > 0;
@@ -2240,8 +2242,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         : unixTimestampToIso(definition.closeAt);
       upsertElectionSummary({
         electionId: definition.questionnaireId,
-        title: definition.title,
-        description: definition.description ?? "",
+        title: resolveLocalised(definition.title, "en"),
+        description: resolveLocalised(definition.description ?? "", "en"),
         state: summaryState,
         openedAt: unixTimestampToIso(definition.openAt) ?? existingSummary?.openedAt ?? null,
         closedAt: stateClosedAt,
@@ -2462,7 +2464,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
           );
           const cachedDefinitionTitle = cachedDefinition
             && cachedDefinitionBelongsToCoordinator
-            ? cachedDefinition.title?.trim() ?? ""
+            ? resolveLocalised(cachedDefinition.title, "en").trim()
             : "";
           if (summary.state !== "draft" && cachedDefinitionBelongsToCoordinator) {
             publishedIds.add(summaryId);
@@ -2487,7 +2489,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
             const parsedId = parsed.questionnaireId.trim();
             ids.add(parsedId);
             publishedIds.add(parsedId);
-            const eventTitle = parsed.title.trim();
+            const eventTitle = resolveLocalised(parsed.title, "en").trim();
             const createdAt = Number(event.created_at ?? parsed.createdAt ?? 0);
             const existingCreatedAt = eventCreatedAtById.get(parsedId);
             if (Number.isFinite(createdAt) && (!Number.isFinite(existingCreatedAt) || createdAt < (existingCreatedAt ?? Number.MAX_SAFE_INTEGER))) {
@@ -2560,7 +2562,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
           );
           const cachedDefinitionTitle = cachedDefinition
             && cachedDefinitionBelongsToCoordinator
-            ? cachedDefinition.title?.trim() ?? ""
+            ? resolveLocalised(cachedDefinition.title, "en").trim()
             : "";
           if (summary.state !== "draft" && cachedDefinitionBelongsToCoordinator) {
             publishedIds.add(summaryId);
@@ -3057,8 +3059,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
 
     const closeDurationSeconds = definitionCloseDurationSeconds(activePublishedDefinition);
     const hasCloseTimer = closeDurationSeconds > 0 && closeDurationSeconds < QUESTIONNAIRE_TIMER_DISABLED_CLOSE_SECONDS;
-    setTitle(activePublishedDefinition.title);
-    setDescription(activePublishedDefinition.description ?? "");
+    setTitle(resolveLocalised(activePublishedDefinition.title, "en"));
+    setDescription(resolveLocalised(activePublishedDefinition.description ?? "", "en"));
     setCloseTimerEnabled(hasCloseTimer);
     setCloseAfterMinutes(hasCloseTimer ? String(Math.max(1, Math.round(closeDurationSeconds / 60))) : QUESTIONNAIRE_TIMER_FALLBACK_MINUTES);
     setCloseTimerUnit("minutes");
@@ -3544,7 +3546,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   const questionnaireOptionLabel = (id: string) => {
     const selectedId = questionnaireId.trim();
     const selectedPublishedTitle = activePublishedDefinition?.questionnaireId === selectedId
-      ? activePublishedDefinition.title.trim()
+      ? resolveLocalised(activePublishedDefinition.title, "en").trim()
       : "";
     const selectedDraftTitle = view === "build" && id === selectedId
       ? title.trim()
@@ -3679,7 +3681,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             score: optionScores.get(option.optionId) ?? 0,
             firstChoiceCount: rankCounts.get(option.optionId)?.get(question.options.length) ?? 0,
           }))
-          .sort((left, right) => right.score - left.score || left.label.localeCompare(right.label));
+          .sort((left, right) => right.score - left.score || resolveLocalised(left.label, "en").localeCompare(resolveLocalised(right.label, "en")));
         return {
           questionId: question.questionId,
           index,
@@ -3877,8 +3879,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         const publicKey = toQuestionnaireBlindPublicKey(privateKey);
         const election = {
           electionId: definitionToPublish.questionnaireId,
-          title: definitionToPublish.title,
-          description: definitionToPublish.description ?? "",
+          title: resolveLocalised(definitionToPublish.title, "en"),
+          description: resolveLocalised(definitionToPublish.description ?? "", "en"),
           state: "draft" as const,
           openedAt: null,
           closedAt: null,
@@ -3968,8 +3970,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         storeCachedQuestionnaireDefinition(definitionToPublish);
         upsertElectionSummary({
           electionId: definitionToPublish.questionnaireId,
-          title: definitionToPublish.title,
-          description: definitionToPublish.description ?? "",
+          title: resolveLocalised(definitionToPublish.title, "en"),
+          description: resolveLocalised(definitionToPublish.description ?? "", "en"),
           state: "open",
           openedAt: new Date(definitionToPublish.openAt * 1000).toISOString(),
           closedAt: new Date(definitionToPublish.closeAt * 1000).toISOString(),
@@ -4120,8 +4122,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         if (summaryState && (definition || existingSummary)) {
           upsertElectionSummary({
             electionId: id,
-            title: definition?.title ?? existingSummary?.title ?? id,
-            description: definition?.description ?? existingSummary?.description ?? "",
+            title: definition ? resolveLocalised(definition.title, "en") : existingSummary?.title ?? id,
+            description: definition ? resolveLocalised(definition.description ?? "", "en") : existingSummary?.description ?? "",
             state: summaryState,
             openedAt: definition ? unixTimestampToIso(definition.openAt) : existingSummary?.openedAt ?? null,
             closedAt: state === "closed" || state === "results_published"
@@ -5129,7 +5131,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             {currentState === "open" ? "Close and publish?" : "Publish results?"}
           </h2>
           <p id='publish-confirm-description' className='simple-voter-note'>
-            This will publish the current result summary for {activePublishedDefinition?.title?.trim() || "this questionnaire"}.
+            This will publish the current result summary for {resolveLocalised(activePublishedDefinition?.title ?? "", "en").trim() || "this questionnaire"}.
           </p>
           <div className='simple-new-identity-confirm-warning simple-publish-confirm-summary'>
             <span className='simple-new-identity-confirm-warning-icon' aria-hidden='true'>i</span>
@@ -5189,8 +5191,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           variant='session'
           questionnaire={activePublishedDefinition ? {
             questionnaireId: activePublishedDefinition.questionnaireId,
-            title: activePublishedDefinition.title || "Untitled questionnaire",
-            description: activePublishedDefinition.description ?? "",
+            title: resolveLocalised(activePublishedDefinition.title, "en") || "Untitled questionnaire",
+            description: resolveLocalised(activePublishedDefinition.description ?? "", "en"),
             createdAt: activePublishedDefinition.createdAt,
             openAt: activePublishedDefinition.openAt,
             closeAt: activePublishedDefinition.closeAt,
@@ -5484,7 +5486,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         {questions.map((question, index) => {
           const canMoveUp = index > 0;
           const canMoveDown = index < questions.length - 1;
-          const promptMissing = !question.prompt.trim();
+          const promptMissing = !resolveLocalised(question.prompt, "en").trim();
           const questionIncomplete = !isQuestionDraftValid(question);
           const questionFooter = (
             <div className='simple-questionnaire-question-footer'>
@@ -5580,7 +5582,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   id: `question-prompt-${index}`,
                   'aria-label': `Question ${index + 1} prompt`,
                   'aria-invalid': promptMissing || undefined,
-                  value: question.prompt,
+                  value: resolveLocalised(question.prompt, "en"),
                   placeholder: 'Question prompt',
                   onChange: (event) => {
                     const nextValue = event.target.value;
@@ -5720,11 +5722,11 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
                           <UiTextField
-                            inputClassName={`simple-voter-input${!option.label.trim() ? " is-missing" : ""}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
                             inputProps={{
-                              value: option.label,
+                              value: resolveLocalised(option.label, "en"),
                               "aria-label": `Option ${optionIndex + 1}`,
-                              "aria-invalid": !option.label.trim() || undefined,
+                              "aria-invalid": !resolveLocalised(option.label, "en").trim() || undefined,
                               onChange: (event) => {
                                 const nextLabel = event.target.value;
                                 updateQuestion(index, (entry) => {
@@ -5798,11 +5800,11 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
                           <UiTextField
-                            inputClassName={`simple-voter-input${!option.label.trim() ? " is-missing" : ""}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
                             inputProps={{
-                              value: option.label,
+                              value: resolveLocalised(option.label, "en"),
                               "aria-label": `Rank option ${optionIndex + 1}`,
-                              "aria-invalid": !option.label.trim() || undefined,
+                              "aria-invalid": !resolveLocalised(option.label, "en").trim() || undefined,
                               onChange: (event) => {
                                 const nextLabel = event.target.value;
                                 updateQuestion(index, (entry) => {
