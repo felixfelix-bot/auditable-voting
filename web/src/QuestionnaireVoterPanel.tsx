@@ -4,6 +4,7 @@ import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQues
 import { formatQuestionnaireStateLabel, formatQuestionnaireTokenStatusLabel, parseQuestionnaireResultSummaryEvent, selectLatestQuestionnaireDefinition, selectLatestQuestionnaireState } from "./questionnaireRuntime";
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
 import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireQuestion, type QuestionnaireResponseAnswer, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import TokenFingerprint from "./TokenFingerprint";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { resolveQuestionnaireResponderNpub } from "./questionnaireResponderIdentity";
@@ -790,8 +791,8 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
           const stale = isDefinitionMarkedStale(parsed);
           const entry: QuestionnaireSelectorEntry = {
             questionnaireId: id,
-            title: parsed.title?.trim() ?? "",
-            description: parsed.description?.trim() ?? "",
+            title: resolveLocalised(parsed.title, "en").trim(),
+            description: resolveLocalised(parsed.description ?? "", "en").trim(),
             lifecycle,
             coordinatorPubkey: parsed.coordinatorPubkey,
             openAt: Number.isFinite(parsed.openAt) ? parsed.openAt : null,
@@ -1425,7 +1426,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
           const existing = current.find((entry) => entry.questionnaireId === definition.questionnaireId);
           const nextEntry: QuestionnaireParticipationHistoryEntry = {
             questionnaireId: definition.questionnaireId,
-            title: definition.title?.trim() ?? "",
+            title: resolveLocalised(definition.title, "en").trim(),
             coordinatorPubkey: definition.coordinatorPubkey,
             submissionCount: Math.max(1, (existing?.submissionCount ?? 0) + 1),
             lastSubmittedAt: submittedAt,
@@ -1604,8 +1605,8 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
   return (
     <div className='simple-voter-card'>
       <h3 className='simple-voter-question'>Questionnaire</h3>
-      <p className='simple-voter-note'>{definition?.title ?? "Questionnaire"}</p>
-      <p className='simple-voter-note'>{definition?.description ?? "This response is submitted using a one-time token."}</p>
+      <p className='simple-voter-note'>{resolveLocalised(definition?.title ?? "", "en") || "Questionnaire"}</p>
+      <p className='simple-voter-note'>{resolveLocalised(definition?.description ?? "", "en") || "This response is submitted using a one-time token."}</p>
       <p className='simple-voter-note'>{definition?.responseVisibility === "private" ? "Answers are encrypted" : "Answers are public"}</p>
       {responderMarkerNpub ? (
         <div className='simple-voter-action-row simple-voter-action-row-inline simple-voter-action-row-tight'>
@@ -1695,7 +1696,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
             if (!shouldShowQuestion(question, answeredMap, questionMap)) {
               return null;
             }
-            const questionPrompt = question.prompt.trim() || "Untitled question";
+            const questionPrompt = resolveLocalised(question.prompt, "en").trim() || "Untitled question";
             const requirementLabel = question.required ? "Required" : "Optional";
             if (question.type === "yes_no") {
               const selected = answerState[question.questionId];
@@ -1757,7 +1758,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                           disabled={responseLocked}
                           onChange={() => setMultipleChoiceAnswer(question.questionId, option.optionId, question.multiSelect)}
                         />
-                        <span>{option.label}</span>
+                        <span>{resolveLocalised(option.label, "en")}</span>
                       </label>
                     ))}
                   </div>
@@ -1819,7 +1820,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                                 <span className='simple-questionnaire-rank-selected'>
                                   <span className='simple-questionnaire-rank-selected-option'>
                                     <span className='simple-questionnaire-rank-inline-number'>{rankedIndex + 1}. </span>
-                                    <span>{option.label}</span>
+                                    <span>{resolveLocalised(option.label, "en")}</span>
                                   </span>
                                   <span className='simple-questionnaire-rank-remove-prefix'>Remove as #{rankedIndex + 1}</span>
                                 </span>
@@ -1861,7 +1862,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                             onPress={() => addRankedAnswer(question.questionId, option.optionId)}
                             isDisabled={responseLocked}
                           >
-                            <span className='simple-questionnaire-rank-add-option'>{option.label}</span>
+                            <span className='simple-questionnaire-rank-add-option'>{resolveLocalised(option.label, "en")}</span>
                             <span className='simple-questionnaire-rank-add-prefix'>Add as #{ranked.length + 1}</span>
                           </UiButton>
                         ))}

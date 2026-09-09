@@ -149,6 +149,7 @@ import {
   questionRequiredScope,
   type QuestionnaireResponsePayload,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import type { QuestionnaireAcceptedResponse } from "./questionnaireRuntime";
 import {
   loadAdmittedVoters,
@@ -2322,12 +2323,12 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
     const cachedDefinition = electionId ? readCachedQuestionnaireDefinition(electionId) : null;
     const electionSummary = electionId ? loadElectionSummary(electionId) : null;
     const title =
-      cachedDefinition?.title?.trim()
+      resolveLocalised(cachedDefinition?.title ?? "", "en").trim()
       || electionSummary?.title?.trim()
       || questionPrompt.trim()
       || "Vote";
     const description =
-      cachedDefinition?.description?.trim()
+      resolveLocalised(cachedDefinition?.description ?? "", "en").trim()
       || electionSummary?.description?.trim()
       || "";
     return { title, description };
@@ -2862,8 +2863,8 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
         coordinatorNpub: activeCoordinatorNpub,
         summary: {
           electionId: optionAElectionId,
-          title: existingSummary?.title?.trim() || cachedDefinition?.title?.trim() || questionPrompt,
-          description: existingSummary?.description ?? cachedDefinition?.description ?? "",
+          title: existingSummary?.title?.trim() || resolveLocalised(cachedDefinition?.title ?? "", "en").trim() || questionPrompt,
+          description: existingSummary?.description ?? resolveLocalised(cachedDefinition?.description ?? "", "en") ?? "",
           state: bootstrapState,
           openedAt: existingSummary?.openedAt ?? (cachedDefinition?.openAt ? new Date(cachedDefinition.openAt * 1000).toISOString() : undefined),
           closedAt: existingSummary?.closedAt ?? (cachedDefinition?.closeAt ? new Date(cachedDefinition.closeAt * 1000).toISOString() : undefined),
@@ -5290,8 +5291,8 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
     const cachedDefinition = readCachedQuestionnaireDefinition(electionId);
     const summary = loadElectionSummary(electionId);
     const runtimeSummary: Partial<ElectionSummary> = {
-      title: cachedDefinition?.title ?? summary?.title,
-      description: cachedDefinition?.description ?? summary?.description,
+      title: resolveLocalised(cachedDefinition?.title ?? "", "en") || summary?.title,
+      description: resolveLocalised(cachedDefinition?.description ?? "", "en") || summary?.description,
       state: summary?.state ?? "open",
       openedAt: summary?.openedAt ?? (cachedDefinition?.openAt ? new Date(cachedDefinition.openAt * 1000).toISOString() : undefined),
       closedAt: summary?.closedAt ?? (cachedDefinition?.closeAt ? new Date(cachedDefinition.closeAt * 1000).toISOString() : undefined),
@@ -5650,8 +5651,8 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
           eventType: "questionnaire_admission_announcement" as const,
           questionnaireId,
           coordinatorPubkey: coordinatorNpub,
-          title: cachedDefinition?.title?.trim() || summary?.title?.trim() || questionnaireId,
-          description: cachedDefinition?.description ?? summary?.description ?? "",
+          title: resolveLocalised(cachedDefinition?.title ?? "", "en").trim() || summary?.title?.trim() || questionnaireId,
+          description: resolveLocalised(cachedDefinition?.description ?? "", "en") || (summary?.description ?? ""),
           state: announcementState,
           createdAt: Math.floor(Date.now() / 1000),
           openAt: cachedDefinition?.openAt ?? (summary?.openedAt ? Math.floor(Date.parse(summary.openedAt) / 1000) : null),
