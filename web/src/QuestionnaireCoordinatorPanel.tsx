@@ -377,7 +377,7 @@ function createFreeTextQuestion(questionId: string, prompt: LocalisableText = ""
  * Uses the prompt if available, otherwise falls back to the questionId.
  */
 function questionDependencyLabel(question: QuestionnaireQuestionDraft): string {
-  const prompt = question.prompt.trim();
+  const prompt = resolveLocalised(question.prompt, "en").trim();
   return prompt || question.questionId;
 }
 
@@ -5702,7 +5702,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                                     }));
                                   }}
                                 />
-                                {opt.label || opt.optionId}
+                                {resolveLocalised(opt.label, "en") || opt.optionId}
                               </label>
                             ))}
                           </div>
