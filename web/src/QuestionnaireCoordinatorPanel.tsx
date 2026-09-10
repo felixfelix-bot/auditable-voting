@@ -22,8 +22,11 @@ import {
   type QuestionCondition,
 } from "./questionnaireProtocol";
 import { resolveLocalised } from "./i18n/resolveLocale";
+import { localisedFieldValue, toLocalisableText, trimLocalisableText, withLocalisedField } from "./i18n/localisedText";
+import { isLocalisedText } from "./i18n/types";
 import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
 import { type UiStringKey } from "./i18n/uiStrings";
+import type { LocalisedText } from "./i18n/types";
 import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import {
@@ -61,6 +64,7 @@ import {
 import { createSignerService } from "./services/signerService";
 import { findCoordinatorBlindSigningPrivateKey, listElectionSummaries, loadCoordinatorState, loadElectionSummary, saveCoordinatorState, upsertElectionSummary } from "./questionnaireOptionAStorage";
 import { UiButton, UiIcon, UiSelect, UiSwitch, UiTextArea, UiTextField } from "./ui/DesignLayer";
+import { LocalisedTextTranslations } from "./ui/LocalisedTextTranslations";
 import {
   type WorkerElectionConfigSnapshot,
   fetchOptionAWorkerStatusDmsWithNsec,
@@ -609,8 +613,8 @@ const WORKER_CREDENTIALS_STORAGE_KEY = "coordinator.worker-credentials.v1";
 
 type StoredQuestionnaireDraft = {
   questionnaireId: string;
-  title: string;
-  description: string;
+  title: LocalisableText;
+  description: LocalisableText;
   closeTimerEnabled: boolean;
   closeAfterMinutes: string;
   closeTimerUnit?: CloseTimerUnit;
@@ -684,7 +688,10 @@ function normaliseStoredQuestions(input: unknown): QuestionnaireQuestionDraft[] 
       && typeof entry === "object"
       && typeof (entry as { questionId?: unknown }).questionId === "string"
       && typeof (entry as { type?: unknown }).type === "string"
-      && typeof (entry as { prompt?: unknown }).prompt === "string"
+      && (
+        typeof (entry as { prompt?: unknown }).prompt === "string"
+        || isLocalisedText((entry as { prompt?: unknown }).prompt)
+      )
     ))
     .map((entry) => {
       const withStoredGroup = (question: QuestionnaireQuestionDraft) => withNormalisedQuestionBallotGroup({
@@ -838,8 +845,8 @@ function readStoredQuestionnaireDraft(): StoredQuestionnaireDraft {
       questionnaireId: typeof parsed.questionnaireId === "string" && parsed.questionnaireId.trim()
         ? parsed.questionnaireId.trim()
         : fallbackId,
-      title: typeof parsed.title === "string" ? parsed.title : "",
-      description: typeof parsed.description === "string" ? parsed.description : "",
+      title: toLocalisableText(typeof parsed.title === "string" ? parsed.title : isLocalisedText(parsed.title) ? parsed.title : ""),
+      description: toLocalisableText(typeof parsed.description === "string" ? parsed.description : isLocalisedText(parsed.description) ? parsed.description : ""),
       closeTimerEnabled: parsed.closeTimerEnabled === true,
       closeAfterMinutes: typeof parsed.closeAfterMinutes === "string" && parsed.closeAfterMinutes.trim()
         ? parsed.closeAfterMinutes
@@ -1504,8 +1511,8 @@ function deriveAcceptedResponseDecryptedAnswerQuestionIds(response: Questionnair
 function buildDefinition(input: {
   questionnaireId: string;
   coordinatorPubkey: string;
-  title: string;
-  description: string;
+  title: LocalisableText;
+  description: LocalisableText;
   closeAfterMinutes?: number;
   questionnaireRelays?: string[];
   voterGroups?: QuestionnaireVoterGroup[];
@@ -1524,8 +1531,8 @@ function buildDefinition(input: {
     flowMode: QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
     responseMode: QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN,
     questionnaireId: input.questionnaireId,
-    title: input.title,
-    description: input.description,
+    title: trimLocalisableText(input.title),
+    description: trimLocalisableText(input.description),
     createdAt,
     openAt: createdAt,
     closeAt: createdAt + (closeAfterMinutes * 60),
@@ -3063,8 +3070,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
 
     const closeDurationSeconds = definitionCloseDurationSeconds(activePublishedDefinition);
     const hasCloseTimer = closeDurationSeconds > 0 && closeDurationSeconds < QUESTIONNAIRE_TIMER_DISABLED_CLOSE_SECONDS;
-    setTitle(resolveLocalised(activePublishedDefinition.title, "en"));
-    setDescription(resolveLocalised(activePublishedDefinition.description ?? "", "en"));
+    setTitle(toLocalisableText(activePublishedDefinition.title));
+    setDescription(toLocalisableText(activePublishedDefinition.description ?? ""));
     setCloseTimerEnabled(hasCloseTimer);
     setCloseAfterMinutes(hasCloseTimer ? String(Math.max(1, Math.round(closeDurationSeconds / 60))) : QUESTIONNAIRE_TIMER_FALLBACK_MINUTES);
     setCloseTimerUnit("minutes");
@@ -3264,8 +3271,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     return buildDefinition({
       questionnaireId: questionnaireId.trim(),
       coordinatorPubkey: coordinatorNpub,
-      title: title.trim(),
-      description: description.trim(),
+      title: trimLocalisableText(title),
+      description: trimLocalisableText(description),
       closeAfterMinutes: closeMinutes,
       questionnaireRelays: questionnaireRelayMetadata,
       voterGroups,
@@ -3405,7 +3412,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   }
   const lastParticipantCountPublishKeyRef = useRef("");
 
-  const titleReady = title.trim().length > 0;
+  const titleReady = resolveLocalised(title, "en").trim().length > 0;
   const hasQuestion = questions.length > 0;
   const hasKnownVoter = (props.knownVoterCount ?? 0) > 0;
   const questionsValid = questions.length > 0 && questions.every((question) => isQuestionDraftValid(question));
@@ -3481,7 +3488,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           : currentState === "open"
           ? "Open"
           : "Draft";
-  const checklistDescriptionAdded = description.trim().length > 0;
+  const checklistDescriptionAdded = resolveLocalised(description, "en").trim().length > 0;
   const readinessItems = useMemo<QuestionnaireReadinessItem[]>(() => ([
     {
       id: "basics",
@@ -3553,7 +3560,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
       ? resolveLocalised(activePublishedDefinition.title, "en").trim()
       : "";
     const selectedDraftTitle = view === "build" && id === selectedId
-      ? title.trim()
+      ? resolveLocalised(title, "en").trim()
       : "";
     const availableTitle = availableQuestionnaireTitles[id]?.trim() ?? "";
     if (view === "build" && id === selectedId) {
@@ -5248,7 +5255,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           <div className='simple-questionnaire-build-main'>
               {!isProxyBuildPage ? (
                 <header className='simple-questionnaire-editor-title'>
-                  <h1>{title.trim() || "Untitled questionnaire"}</h1>
+                  <h1>{resolveLocalised(title, "en").trim() || "Untitled questionnaire"}</h1>
                   <span>{publishedDefinition ? buildStateLabel : "Draft"}</span>
                 </header>
               ) : null}
@@ -5257,15 +5264,15 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         <section id='questionnaire-basic-section' className='simple-questionnaire-build-cardlet'>
       <div className='simple-questionnaire-identity-grid'>
         <div className='simple-questionnaire-form-field'>
-          <UiTextField
+          <LocalisedTextTranslations
+            value={title}
+            onChange={setTitle}
             label='Title'
+            ariaLabel='Title'
+            placeholder='Vote name'
             inputClassName='simple-voter-input'
-            inputProps={{
-              id: 'questionnaire-title',
-              value: title,
-              placeholder: 'Vote name',
-              onChange: (event) => setTitle(event.target.value),
-            }}
+            idPrefix='questionnaire-title'
+            disabled={questionnaireEditorLocked}
           />
         </div>
         <div className='simple-questionnaire-id-panel'>
@@ -5295,16 +5302,17 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
       </div>
 
       <div className='simple-questionnaire-form-field'>
-        <UiTextArea
+        <LocalisedTextTranslations
+          value={description}
+          onChange={setDescription}
           label='Description'
-          textAreaClassName='simple-voter-input'
-          textAreaProps={{
-            id: 'questionnaire-description',
-            rows: 3,
-            value: description,
-            placeholder: 'Short description',
-            onChange: (event) => setDescription(event.target.value),
-          }}
+          ariaLabel='Description'
+          placeholder='Short description'
+          inputClassName='simple-voter-input'
+          textArea
+          rows={3}
+          idPrefix='questionnaire-description'
+          disabled={questionnaireEditorLocked}
         />
       </div>
         </section>
@@ -5580,19 +5588,17 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   </div>
                 </div>
               </div>
-              <UiTextField
-                inputClassName={`simple-voter-input${promptMissing ? " is-missing" : ""}`}
-                inputProps={{
-                  id: `question-prompt-${index}`,
-                  'aria-label': `Question ${index + 1} prompt`,
-                  'aria-invalid': promptMissing || undefined,
-                  value: resolveLocalised(question.prompt, "en"),
-                  placeholder: 'Question prompt',
-                  onChange: (event) => {
-                    const nextValue = event.target.value;
-                    updateQuestion(index, (entry) => ({ ...entry, prompt: nextValue }));
-                  },
+              <LocalisedTextTranslations
+                value={question.prompt}
+                onChange={(next) => {
+                  updateQuestion(index, (entry) => ({ ...entry, prompt: next }));
                 }}
+                ariaLabel={`Question ${index + 1} prompt`}
+                placeholder='Question prompt'
+                inputClassName={`simple-voter-input${promptMissing ? " is-missing" : ""}`}
+                invalid={promptMissing}
+                idPrefix={`question-prompt-${index}`}
+                disabled={questionnaireEditorLocked}
               />
               {/* Conditional display (showIf) configuration */}
               <div className='simple-questionnaire-conditional-config'>
@@ -5725,27 +5731,26 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                     <div className='simple-questionnaire-options-list'>
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
-                          <UiTextField
-                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
-                            inputProps={{
-                              value: resolveLocalised(option.label, "en"),
-                              "aria-label": `Option ${optionIndex + 1}`,
-                              "aria-invalid": !resolveLocalised(option.label, "en").trim() || undefined,
-                              onChange: (event) => {
-                                const nextLabel = event.target.value;
-                                updateQuestion(index, (entry) => {
-                                  if (entry.type !== "multiple_choice") {
-                                    return entry;
-                                  }
-                                  return bumpQuestionBallotSlotVersion({
-                                    ...entry,
-                                    options: entry.options.map((entryOption, entryOptionIndex) => (
-                                      entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
-                                    )),
-                                  });
+                          <LocalisedTextTranslations
+                            value={option.label}
+                            onChange={(nextLabel) => {
+                              updateQuestion(index, (entry) => {
+                                if (entry.type !== "multiple_choice") {
+                                  return entry;
+                                }
+                                return bumpQuestionBallotSlotVersion({
+                                  ...entry,
+                                  options: entry.options.map((entryOption, entryOptionIndex) => (
+                                    entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
+                                  )),
                                 });
-                              },
+                              });
                             }}
+                            ariaLabel={`Option ${optionIndex + 1}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
+                            invalid={!resolveLocalised(option.label, "en").trim()}
+                            idPrefix={`question-${index}-option-${optionIndex}`}
+                            disabled={questionnaireEditorLocked}
                           />
                           <UiButton
                             icon='delete'
@@ -5803,27 +5808,26 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                     <div className='simple-questionnaire-options-list'>
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
-                          <UiTextField
-                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
-                            inputProps={{
-                              value: resolveLocalised(option.label, "en"),
-                              "aria-label": `Rank option ${optionIndex + 1}`,
-                              "aria-invalid": !resolveLocalised(option.label, "en").trim() || undefined,
-                              onChange: (event) => {
-                                const nextLabel = event.target.value;
-                                updateQuestion(index, (entry) => {
-                                  if (entry.type !== "rank") {
-                                    return entry;
-                                  }
-                                  return bumpQuestionBallotSlotVersion({
-                                    ...entry,
-                                    options: entry.options.map((entryOption, entryOptionIndex) => (
-                                      entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
-                                    )),
-                                  });
+                          <LocalisedTextTranslations
+                            value={option.label}
+                            onChange={(nextLabel) => {
+                              updateQuestion(index, (entry) => {
+                                if (entry.type !== "rank") {
+                                  return entry;
+                                }
+                                return bumpQuestionBallotSlotVersion({
+                                  ...entry,
+                                  options: entry.options.map((entryOption, entryOptionIndex) => (
+                                    entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
+                                  )),
                                 });
-                              },
+                              });
                             }}
+                            ariaLabel={`Rank option ${optionIndex + 1}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
+                            invalid={!resolveLocalised(option.label, "en").trim()}
+                            idPrefix={`question-${index}-rank-option-${optionIndex}`}
+                            disabled={questionnaireEditorLocked}
                           />
                           <UiButton
                             icon='delete'
@@ -5955,7 +5959,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   <h3>Questionnaire summary</h3>
                   <ul>
                     <li className={titleReady ? "is-ready" : ""}><UiIcon name='check' />Title</li>
-                    <li className={description.trim() ? "is-ready" : ""}><UiIcon name='check' />Description</li>
+                    <li className={resolveLocalised(description, "en").trim() ? "is-ready" : ""}><UiIcon name='check' />Description</li>
                     <li className={questions.length > 0 && questions.every(isQuestionDraftValid) ? "is-ready" : ""}><UiIcon name='check' />{questions.length} {questions.length === 1 ? "Question" : "Questions"}</li>
                     <li className={voterGroups.length > 0 ? "is-ready" : ""}><UiIcon name='check' />{voterGroups.length} {voterGroups.length === 1 ? "Voter Group" : "Voter Groups"}</li>
                     <li className={canPublishDraft ? "is-ready" : ""}><UiIcon name='check' />Ready to publish</li>
