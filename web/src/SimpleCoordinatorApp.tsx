@@ -63,6 +63,9 @@ import SimpleUnlockGate from "./SimpleUnlockGate";
 import ResidentOtpAdmission from "./ResidentOtpAdmission";
 import DeliveryPanel from "./otpDelivery/DeliveryPanel";
 import { UiButton, UiDataTable, UiIcon, UiSelect, UiSwitch, UiTextField, type UiIconName } from "./ui/DesignLayer";
+import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
+import { t, type UiStringKey } from "./i18n/uiStrings";
+import { type SupportedLocale } from "./i18n/types";
 import QuestionnaireCoordinatorPanel, {
   QUESTIONNAIRE_ID_RESET_EVENT,
   readStoredQuestionnaireRelayInput,
@@ -425,11 +428,11 @@ const DEFAULT_QUESTIONNAIRE_READINESS_ITEMS: QuestionnaireReadinessItem[] = [
   { id: "invite", label: "Results & Voters", shortLabel: "Voters", complete: false, stageLabel: "4", group: "session", action: "invite_voters" },
 ];
 
-function questionnaireReadinessStatusLabel(item: QuestionnaireReadinessItem) {
+function questionnaireReadinessStatusLabel(item: QuestionnaireReadinessItem, locale: SupportedLocale) {
   if (item.optional && !item.complete) {
-    return "Optional";
+    return t("statusOptional", locale);
   }
-  return item.complete ? "Complete" : "Pending";
+  return item.complete ? t("statusComplete", locale) : t("statusPending", locale);
 }
 
 function questionnaireReadinessGroupIcon(group: QuestionnaireReadinessItem["group"] | "profile"): UiIconName {
@@ -1615,6 +1618,8 @@ type OptionAQueueProcessingDebug = {
 };
 
 export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: SimpleCoordinatorAppProps = {}) {
+  const { locale } = useLocaleSafe();
+  const t = useTSafe();
   const [keypair, setKeypair] = useState<SimpleCoordinatorKeypair | null>(null);
   const [identityReady, setIdentityReady] = useState(false);
   const [coordinatorId, setCoordinatorId] = useState("pending");
@@ -8821,7 +8826,7 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
     const isPrimaryPublishAction = item.id === "publish" && questionnairePrimaryPublishAction;
     const isDisabled = item.disabled || (isPrimaryPublishAction ? questionnairePrimaryPublishAction.disabled : false);
     const className = `simple-sidebar-readiness-button${item.complete ? " is-complete" : " is-pending"}${item.optional ? " is-optional" : ""}${isDisabled ? " is-disabled" : ""}${(item.action || isPrimaryPublishAction) && !isDisabled ? " is-action" : ""}${isActive ? " is-active" : ""}`;
-    const label = isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.label}: ${questionnaireReadinessStatusLabel(item)}`;
+    const label = isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.label}: ${questionnaireReadinessStatusLabel(item, locale)}`;
     const content = (
       <>
         <span className='simple-sidebar-readiness-entry-main'>
@@ -8873,7 +8878,7 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
     const isPrimaryPublishAction = item.id === "publish" && questionnairePrimaryPublishAction;
     const isDisabled = item.disabled || (isPrimaryPublishAction ? questionnairePrimaryPublishAction.disabled : false);
     const className = `simple-sidebar-readiness-compact-button${item.complete ? " is-complete" : " is-pending"}${item.optional ? " is-optional" : ""}${isDisabled ? " is-disabled" : ""}${(item.action || isPrimaryPublishAction) && !isDisabled ? " is-action" : ""}${item.group === "questionnaire" ? " is-questionnaire" : ""}${isActive ? " is-active" : ""}`;
-    const label = isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.label}: ${questionnaireReadinessStatusLabel(item)}`;
+    const label = isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.label}: ${questionnaireReadinessStatusLabel(item, locale)}`;
     const content = (
       <span className={`simple-sidebar-readiness-entry-icon${item.complete ? " is-complete" : " is-pending"}`} aria-hidden='true'>
         <UiIcon name={questionnaireReadinessEntryIcon(item)} />
@@ -8886,7 +8891,7 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
         icon={false}
         className={className}
         aria-current={isActive ? "page" : undefined}
-        title={isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.shortLabel}: ${questionnaireReadinessStatusLabel(item)}`}
+        title={isPrimaryPublishAction ? questionnairePrimaryPublishAction.label : `${item.shortLabel}: ${questionnaireReadinessStatusLabel(item, locale)}`}
         aria-label={label}
         isDisabled={isDisabled}
         onPress={() => isPrimaryPublishAction
@@ -8900,7 +8905,7 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
         key={item.id}
         className={className}
         aria-current={isActive ? "page" : undefined}
-        title={`${item.shortLabel}: ${questionnaireReadinessStatusLabel(item)}`}
+        title={`${item.shortLabel}: ${questionnaireReadinessStatusLabel(item, locale)}`}
         aria-label={label}
       >
         {content}

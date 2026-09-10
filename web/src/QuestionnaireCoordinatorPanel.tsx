@@ -22,6 +22,8 @@ import {
   type QuestionCondition,
 } from "./questionnaireProtocol";
 import { resolveLocalised } from "./i18n/resolveLocale";
+import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
+import { type UiStringKey } from "./i18n/uiStrings";
 import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import {
@@ -231,11 +233,11 @@ type QuestionnaireSubmissionDecisionEntry = {
 
 type QuestionnaireQuestionDraft = QuestionnaireQuestion;
 
-const QUESTION_TYPE_OPTIONS: Array<{ value: QuestionnaireQuestionDraft["type"]; label: string }> = [
-  { value: "yes_no", label: "Yes / No" },
-  { value: "multiple_choice", label: "Multiple choice" },
-  { value: "rank", label: "Ranked" },
-  { value: "free_text", label: "Free text" },
+const QUESTION_TYPE_OPTIONS: Array<{ value: QuestionnaireQuestionDraft["type"]; labelKey: UiStringKey }> = [
+  { value: "yes_no", labelKey: "questionTypeYesNo" },
+  { value: "multiple_choice", labelKey: "questionTypeMultipleChoice" },
+  { value: "rank", labelKey: "questionTypeRank" },
+  { value: "free_text", labelKey: "questionTypeFreeText" },
 ];
 
 function withNormalisedQuestionBallotGroup(question: QuestionnaireQuestionDraft): QuestionnaireQuestionDraft {
@@ -1592,6 +1594,8 @@ function comparableDefinitionDraftShape(definition: QuestionnaireDefinition) {
 }
 
 export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordinatorPanelProps) {
+  const { locale } = useLocaleSafe();
+  const t = useTSafe();
   const deploymentMode = useMemo(() => readDeploymentModeFromUrl(), []);
   const isCourseFeedbackMode = deploymentMode === "course_feedback";
   const isNewRoundMode = props.newRoundMode === true;
@@ -3481,8 +3485,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   const readinessItems = useMemo<QuestionnaireReadinessItem[]>(() => ([
     {
       id: "basics",
-      label: "Title & Description",
-      shortLabel: "Info",
+      label: t("readinessTitleDescription"),
+      shortLabel: t("readinessInfo"),
       complete: titleReady && checklistDescriptionAdded,
       stageLabel: "1",
       group: "questionnaire",
@@ -3490,8 +3494,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "answers",
-      label: "Add a Question",
-      shortLabel: "Questions",
+      label: t("actionAddQuestion"),
+      shortLabel: t("readinessQuestions"),
       complete: questionsValid,
       stageLabel: "2",
       group: "questionnaire",
@@ -3499,8 +3503,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "publish",
-      label: "Published",
-      shortLabel: "Pub",
+      label: t("readinessPublished"),
+      shortLabel: t("readinessPub"),
       complete: Boolean(publishedDefinition),
       stageLabel: "3",
       group: "session",
@@ -3508,8 +3512,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "proxy",
-      label: "Proxy Setup",
-      shortLabel: "Proxy",
+      label: t("readinessProxySetup"),
+      shortLabel: t("readinessProxy"),
       complete: Boolean(activeWorkerDelegation),
       disabled: !publishedDefinition,
       optional: true,
@@ -3519,15 +3523,15 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "invite",
-      label: "Results & Voters",
-      shortLabel: "Voters",
+      label: t("readinessResultsVoters"),
+      shortLabel: t("readinessVoters"),
       complete: knownVoterCount > 0 || displayAcceptedCount > 0,
       disabled: !publishedDefinition,
       stageLabel: "4",
       group: "session",
       action: "invite_voters",
     },
-  ]), [activeWorkerDelegation, checklistDescriptionAdded, displayAcceptedCount, knownVoterCount, publishedDefinition, questionsValid, titleReady]);
+  ]), [activeWorkerDelegation, checklistDescriptionAdded, displayAcceptedCount, knownVoterCount, publishedDefinition, questionsValid, titleReady, t]);
   useEffect(() => {
     props.onReadinessChange?.(readinessItems);
   }, [props.onReadinessChange, readinessItems]);
@@ -3742,10 +3746,10 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   const canExportResults = currentState === "results_published" && Boolean(activePublishedDefinition);
   const showNewRoundPublishOnly = isNewRoundMode && !publishedDefinition;
   const primaryPublishAction: QuestionnairePrimaryPublishAction = !showNewRoundPublishOnly && !publishedDefinition
-    ? { label: isDefinitionPublishInFlight ? "Going live..." : "Go Live", disabled: !canPublishDraft || isDefinitionPublishInFlight }
+    ? { label: isDefinitionPublishInFlight ? t("actionGoingLive") : t("actionGoLive"), disabled: !canPublishDraft || isDefinitionPublishInFlight }
     : publishedDefinition && currentState !== "results_published"
       ? {
-        label: currentState === "open" ? "Close & Publish" : "Publish results",
+        label: currentState === "open" ? t("actionCloseAndPublish") : t("actionPublishResults"),
         disabled: closeAndPublishButtonDisabled,
       }
       : null;
@@ -5523,7 +5527,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                     onChange={(event) => setQuestionType(index, event.target.value as QuestionnaireQuestionDraft["type"])}
                   >
                     {QUESTION_TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
+                      <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
                     ))}
                   </UiSelect>
                   <UiSelect

@@ -5,7 +5,8 @@ import { type LocalisedText, type SupportedLocale } from "./types";
  * Each key maps to a LocalisedText with at least `en` defined.
  * Add new keys here as features are translated.
  *
- * This is the initial set; F1-T4 will expand it with full translations.
+ * Categories: role labels, tab labels, action buttons, question types,
+ * status messages, and assorted shell/coordinator/voter copy.
  */
 export const UI_STRINGS = {
   // ── Role labels ──────────────────────────────────────────────────
@@ -26,17 +27,44 @@ export const UI_STRINGS = {
   actionSave: { en: "Save", fr: "Enregistrer", ta: "சேமி" },
   actionClose: { en: "Close", fr: "Fermer", ta: "மூடு" },
   actionRetry: { en: "Retry", fr: "Réessayer", ta: "மீண்டும் முயற்சி" },
+  actionCopy: { en: "Copy", fr: "Copier", ta: "நகலெடு" },
+  actionCopied: { en: "Copied", fr: "Copié", ta: "நகலெடுக்கப்பட்டது" },
+  actionSignOut: { en: "Sign out", fr: "Se déconnecter", ta: "வெளியேறு" },
+  actionLogin: { en: "Login", fr: "Connexion", ta: "உள்நுழை" },
+  actionContinue: { en: "Continue", fr: "Continuer", ta: "தொடர்" },
+  actionDownloadBackup: { en: "Download backup", fr: "Télécharger la sauvegarde", ta: "காப்புப்பிரதியைப் பதிவிறக்கு" },
+  actionDownloaded: { en: "Downloaded", fr: "Téléchargé", ta: "பதிவிறக்கப்பட்டது" },
+  actionGoLive: { en: "Go Live", fr: "Mettre en ligne", ta: "நேரலைக்குச் செல்" },
+  actionGoingLive: { en: "Going live...", fr: "Mise en ligne...", ta: "நேரலைக்குச் செல்கிறது..." },
+  actionCloseAndPublish: { en: "Close & Publish", fr: "Fermer et publier", ta: "மூடி வெளியிடு" },
+  actionPublishResults: { en: "Publish results", fr: "Publier les résultats", ta: "முடிவுகளை வெளியிடு" },
+  actionAddQuestion: { en: "Add a Question", fr: "Ajouter une question", ta: "கேள்வியைச் சேர்" },
+  actionDelete: { en: "Delete", fr: "Supprimer", ta: "நீக்கு" },
+  actionEdit: { en: "Edit", fr: "Modifier", ta: "திருத்து" },
+  actionRemove: { en: "Remove", fr: "Retirer", ta: "அகற்று" },
+  actionBack: { en: "Back", fr: "Retour", ta: "பின்" },
+  actionNext: { en: "Next", fr: "Suivant", ta: "அடுத்து" },
+  actionRefresh: { en: "Refresh", fr: "Actualiser", ta: "புதுப்பி" },
 
   // ── Question types ───────────────────────────────────────────────
   questionTypeYesNo: { en: "Yes / No", fr: "Oui / Non", ta: "ஆம் / இல்லை" },
   questionTypeMultipleChoice: { en: "Multiple choice", fr: "Choix multiple", ta: "பல தேர்வு" },
-  questionTypeRank: { en: "Rank", fr: "Classement", ta: "தரவரிசை" },
+  questionTypeRank: { en: "Ranked", fr: "Classement", ta: "தரவரிசை" },
   questionTypeFreeText: { en: "Free text", fr: "Texte libre", ta: "கட்டற்ற உரை" },
 
   // ── Status messages ──────────────────────────────────────────────
   statusComplete: { en: "Complete", fr: "Terminé", ta: "முடிந்தது" },
   statusPending: { en: "Pending", fr: "En attente", ta: "நிலுவையில்" },
   statusOptional: { en: "Optional", fr: "Optionnel", ta: "விருப்பத்தேர்வு" },
+  statusRequired: { en: "Required", fr: "Obligatoire", ta: "கட்டாயம்" },
+  statusPublished: { en: "Published", fr: "Publié", ta: "வெளியிடப்பட்டது" },
+  statusClosed: { en: "Closed", fr: "Fermé", ta: "மூடப்பட்டது" },
+  statusDraft: { en: "Draft", fr: "Brouillon", ta: "வரைவு" },
+  statusLoading: { en: "Loading", fr: "Chargement", ta: "ஏற்றுகிறது" },
+  statusWaiting: { en: "Waiting", fr: "En attente", ta: "காத்திருக்கிறது" },
+  statusNoClosingTime: { en: "No closing time", fr: "Pas d'heure de clôture", ta: "மூடும் நேரம் இல்லை" },
+  statusPendingActivation: { en: "Pending activation", fr: "Activation en attente", ta: "செயல்படுத்தல் நிலுவையில்" },
+  statusClosedByAuditProxy: { en: "Closed by audit proxy", fr: "Fermé par le proxy d'audit", ta: "தணிக்கை ப்ராக்ஸியால் மூடப்பட்டது" },
 
   // ── Language switcher ────────────────────────────────────────────
   languageLabel: { en: "Language", fr: "Langue", ta: "மொழி" },
@@ -46,6 +74,79 @@ export const UI_STRINGS = {
 
   // ── Theme ────────────────────────────────────────────────────────
   themeToggle: { en: "Toggle theme", fr: "Changer de thème", ta: "தீம் மாற்று" },
+
+  // ── Shell / account menu ─────────────────────────────────────────
+  menuLabel: { en: "Menu", fr: "Menu", ta: "பட்டி" },
+  appMenuLabel: { en: "App menu", fr: "Menu de l'application", ta: "பயன்பாட்டு பட்டி" },
+  closeMenuLabel: { en: "Close menu", fr: "Fermer le menu", ta: "பட்டியை மூடு" },
+  mainActionsLabel: { en: "Main actions", fr: "Actions principales", ta: "முக்கிய செயல்கள்" },
+  observerPagesLabel: { en: "Observer pages", fr: "Pages d'observateur", ta: "பார்வையாளர் பக்கங்கள்" },
+  questionnaireResultsLabel: { en: "Questionnaire Results", fr: "Résultats du questionnaire", ta: "கேள்வித்தாள் முடிவுகள்" },
+  relaysLabel: { en: "Relays", fr: "Relais", ta: "ரிலேக்கள்" },
+  changeViewLabel: { en: "Change View", fr: "Changer de vue", ta: "காட்சியை மாற்று" },
+  identityLabel: { en: "Identity", fr: "Identité", ta: "அடையாளம்" },
+  qrCodeLabel: { en: "QR code", fr: "Code QR", ta: "QR குறியீடு" },
+  newIdentityLabel: { en: "New identity", fr: "Nouvelle identité", ta: "புதிய அடையாளம்" },
+  aboutLabel: { en: "About", fr: "À propos", ta: "பற்றி" },
+  demoGuideLabel: { en: "Demo guide", fr: "Guide de démonstration", ta: "டெமோ வழிகாட்டி" },
+  enterNsecLabel: { en: "Enter nsec", fr: "Saisir la nsec", ta: "nsec ஐ உள்ளிடு" },
+  advancedLabel: { en: "Advanced", fr: "Avancé", ta: "மேம்பட்டது" },
+  orLoginExisting: { en: "Or login using existing profile:", fr: "Ou connectez-vous avec un profil existant :", ta: "அல்லது ஏற்கனவே உள்ள சுயவிவரத்துடன் உள்நுழையவும்:" },
+  copyNostrConnectUrl: { en: "Copy nostr-connect URL", fr: "Copier l'URL nostr-connect", ta: "nostr-connect URL ஐ நகலெடு" },
+  copyNsecBunkerUrl: { en: "Copy nsec-bunker URL", fr: "Copier l'URL nsec-bunker", ta: "nsec-bunker URL ஐ நகலெடு" },
+  selectRoleLabel: { en: "Select role", fr: "Sélectionner un rôle", ta: "பங்கைத் தேர்ந்தெடு" },
+  identityLoading: { en: "Identity loading", fr: "Chargement de l'identité", ta: "அடையாளம் ஏற்றுகிறது" },
+  copyIdentity: { en: "Copy identity", fr: "Copier l'identité", ta: "அடையாளத்தை நகலெடு" },
+  howItWorks: { en: "How it works", fr: "Comment ça marche", ta: "இது எப்படி செயல்படுகிறது" },
+  appVersionLabel: { en: "App version", fr: "Version de l'application", ta: "பயன்பாட்டு பதிப்பு" },
+  signOutConfirm: { en: "Sign out and return to the landing page?", fr: "Se déconnecter et revenir à la page d'accueil ?", ta: "வெளியேறி முகப்புப் பக்கத்திற்குத் திரும்பவா?" },
+
+  // ── Coordinator readiness ────────────────────────────────────────
+  readinessTitleDescription: { en: "Title & Description", fr: "Titre et description", ta: "தலைப்பு மற்றும் விளக்கம்" },
+  readinessInfo: { en: "Info", fr: "Infos", ta: "தகவல்" },
+  readinessQuestions: { en: "Questions", fr: "Questions", ta: "கேள்விகள்" },
+  readinessPublished: { en: "Published", fr: "Publié", ta: "வெளியிடப்பட்டது" },
+  readinessPub: { en: "Pub", fr: "Pub", ta: "வெளி" },
+  readinessProxySetup: { en: "Proxy Setup", fr: "Configuration du proxy", ta: "ப்ராக்ஸி அமைப்பு" },
+  readinessProxy: { en: "Proxy", fr: "Proxy", ta: "ப்ராக்ஸி" },
+  readinessResultsVoters: { en: "Results & Voters", fr: "Résultats et électeurs", ta: "முடிவுகள் மற்றும் வாக்காளர்கள்" },
+  readinessVoters: { en: "Voters", fr: "Électeurs", ta: "வாக்காளர்கள்" },
+
+  // ── Voter panel ──────────────────────────────────────────────────
+  voterQuestionnaire: { en: "Questionnaire", fr: "Questionnaire", ta: "கேள்வித்தாள்" },
+  voterSubmitResponse: { en: "Submit response", fr: "Soumettre la réponse", ta: "பதிலைச் சமர்ப்பிக்க" },
+  voterSubmitting: { en: "Submitting...", fr: "Soumission...", ta: "சமர்ப்பிக்கிறது..." },
+  voterResponseSubmitted: { en: "Response submitted", fr: "Réponse soumise", ta: "பதில் சமர்ப்பிக்கப்பட்டது" },
+  voterResponseSubmitFailed: { en: "Response submit failed.", fr: "Échec de la soumission de la réponse.", ta: "பதில் சமர்ப்பிப்பு தோல்வியடைந்தது." },
+  voterNotSubmitted: { en: "Not submitted", fr: "Non soumis", ta: "சமர்ப்பிக்கப்படவில்லை" },
+  voterTokenReady: { en: "Token ready", fr: "Jeton prêt", ta: "டோக்கன் தயார்" },
+  voterAnswersEncrypted: { en: "Answers are encrypted", fr: "Les réponses sont chiffrées", ta: "பதில்கள் மறைகுறியாக்கப்பட்டுள்ளன" },
+  voterAnswersPublic: { en: "Answers are public", fr: "Les réponses sont publiques", ta: "பதில்கள் பொதுவானவை" },
+  voterResponderMarker: { en: "Your responder marker", fr: "Votre marqueur de répondant", ta: "உங்கள் பதிலளிப்பாளர் குறி" },
+  voterRestoredQuestionnaire: { en: "Restored questionnaire", fr: "Questionnaire restauré", ta: "மீட்டெடுக்கப்பட்ட கேள்வித்தாள்" },
+  voterParticipationHistory: { en: "Participation history", fr: "Historique de participation", ta: "பங்கேற்பு வரலாறு" },
+  voterUntitledQuestion: { en: "Untitled question", fr: "Question sans titre", ta: "தலைப்பில்லாத கேள்வி" },
+  voterNoQuestionnaireLoaded: { en: "No questionnaire loaded.", fr: "Aucun questionnaire chargé.", ta: "கேள்வித்தாள் ஏற்றப்படவில்லை." },
+  voterQuestionnaireNotOpen: { en: "Questionnaire is not open.", fr: "Le questionnaire n'est pas ouvert.", ta: "கேள்வித்தாள் திறக்கப்படவில்லை." },
+  voterAlreadySubmitted: { en: "Response already submitted for this questionnaire.", fr: "Réponse déjà soumise pour ce questionnaire.", ta: "இந்தக் கேள்வித்தாளுக்கு பதில் ஏற்கனவே சமர்ப்பிக்கப்பட்டது." },
+  voterRefreshFailed: { en: "Questionnaire refresh failed.", fr: "Échec de l'actualisation du questionnaire.", ta: "கேள்வித்தாள் புதுப்பிப்பு தோல்வியடைந்தது." },
+  voterStreamDisconnected: { en: "Questionnaire live stream disconnected.", fr: "Flux en direct du questionnaire déconnecté.", ta: "கேள்வித்தாள் நேரலை இணைப்பு துண்டிக்கப்பட்டது." },
+  voterOneTimeTokenNote: { en: "This response is submitted using a one-time token.", fr: "Cette réponse est soumise à l'aide d'un jeton à usage unique.", ta: "இந்தப் பதில் ஒருமுறை பயன்படுத்தும் டோக்கன் மூலம் சமர்ப்பிக்கப்படுகிறது." },
+
+  // ── Coordinator panel ────────────────────────────────────────────
+  coordinatorDemoTitle: { en: "Neighbourhood Consultation Demo", fr: "Démo de consultation de quartier", ta: "அக்கம்பக்க ஆலோசனை டெமோ" },
+  coordinatorDemoQuestion: { en: "Do you support creating a shared community garden?", fr: "Soutenez-vous la création d'un jardin communautaire partagé ?", ta: "பகிரப்பட்ட சமூகத் தோட்டத்தை உருவாக்குவதை ஆதரிக்கிறீர்களா?" },
+  coordinatorDemoReady: { en: "Demo questionnaire ready. Review it, then select Go Live to publish.", fr: "Questionnaire de démo prêt. Vérifiez-le, puis sélectionnez Mettre en ligne pour publier.", ta: "டெமோ கேள்வித்தாள் தயார். மதிப்பாய்வு செய்து, வெளியிட நேரலைக்குச் செல் என்பதைத் தேர்ந்தெடுக்கவும்." },
+  coordinatorOptionOne: { en: "Option 1", fr: "Option 1", ta: "விருப்பம் 1" },
+  coordinatorOptionTwo: { en: "Option 2", fr: "Option 2", ta: "விருப்பம் 2" },
+  coordinatorQuestionTypeLabel: { en: "type", fr: "type", ta: "வகை" },
+  coordinatorVoterGroupLabel: { en: "voter group", fr: "groupe d'électeurs", ta: "வாக்காளர் குழு" },
+  coordinatorRequiredLabel: { en: "Required", fr: "Obligatoire", ta: "கட்டாயம்" },
+  coordinatorPublishing: { en: "Publishing...", fr: "Publication...", ta: "வெளியிடுகிறது..." },
+  coordinatorClosingPublishing: { en: "Closing and publishing...", fr: "Fermeture et publication...", ta: "மூடி வெளியிடுகிறது..." },
+  coordinatorPublishFailed: { en: "Publish failed", fr: "Échec de la publication", ta: "வெளியீடு தோல்வியடைந்தது" },
+  coordinatorReadyToPublish: { en: "Ready to publish", fr: "Prêt à publier", ta: "வெளியிடத் தயார்" },
+  coordinatorMoveQuestionsBack: { en: "Move questions back to Main before removing this voter group.", fr: "Déplacez les questions vers Principal avant de supprimer ce groupe d'électeurs.", ta: "இந்த வாக்காளர் குழுவை அகற்றும் முன் கேள்விகளை முதன்மைக்கு நகர்த்தவும்." },
 } as const satisfies Record<string, LocalisedText>;
 
 export type UiStringKey = keyof typeof UI_STRINGS;
