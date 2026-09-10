@@ -38,6 +38,8 @@ import {
   type QuestionnaireDefinition,
 } from "./questionnaireProtocol";
 import { resolveLocalised } from "./i18n/resolveLocale";
+import { useLocaleSafe } from "./i18n/LanguageContext";
+import type { SupportedLocale } from "./i18n/types";
 import { mergeQuestionnaireRelayHints } from "./questionnaireRelays";
 import { SIMPLE_DM_RELAYS } from "./simpleShardDm";
 import TokenFingerprint from "./TokenFingerprint";
@@ -301,16 +303,16 @@ function credentialIndexFromSubmission(key: string, submission: BallotSubmission
   return keyedCredentialIndex ? Math.max(1, Math.floor(Number(keyedCredentialIndex))) : 1;
 }
 
-function mapDefinitionQuestions(definition: QuestionnaireDefinition) {
+function mapDefinitionQuestions(definition: QuestionnaireDefinition, locale: SupportedLocale) {
   return definition.questions.map((question) => ({
     questionId: question.questionId,
     required: question.required,
-    prompt: resolveLocalised(question.prompt, "en"),
+    prompt: resolveLocalised(question.prompt, locale),
     requiredScope: questionRequiredScope(question),
     ballotGroup: normaliseQuestionnaireBallotGroup(question.ballotGroup),
     type: question.type,
     options: question.type === "multiple_choice" || question.type === "rank"
-      ? question.options.map((option) => ({ ...option, label: resolveLocalised(option.label, "en") }))
+      ? question.options.map((option) => ({ ...option, label: resolveLocalised(option.label, locale) }))
       : undefined,
     multiSelect: question.type === "multiple_choice" ? question.multiSelect : undefined,
     minimumRanked: question.type === "rank" ? question.minimumRanked : undefined,
@@ -807,6 +809,7 @@ function scopedBallotScopeForQuestion(
 export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptionAVoterPanelProps) {
   const displayMode = props.displayMode ?? "vote";
   const settingsMode = displayMode === "settings";
+  const { locale } = useLocaleSafe();
   const [runtime, setRuntime] = useState<QuestionnaireOptionAVoterRuntime | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [privateInviteBlock, setPrivateInviteBlock] = useState<PrivateInviteBlockState | null>(null);
@@ -1744,10 +1747,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       ?? readCachedQuestionnaireDefinition(electionId);
     if (localDefinition) {
       cacheDefinitionForVoting(localDefinition);
-      setQuestionnaireTitle(resolveLocalised(localDefinition.title, "en") || "Questionnaire");
-      setQuestionnaireDescription(resolveLocalised(localDefinition.description ?? "", "en"));
+      setQuestionnaireTitle(resolveLocalised(localDefinition.title, locale) || "Questionnaire");
+      setQuestionnaireDescription(resolveLocalised(localDefinition.description ?? "", locale));
       setQuestionnaireDefinition(localDefinition);
-      setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(localDefinition), activeBallotGroup));
+      setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(localDefinition, locale), activeBallotGroup));
     }
     let cancelled = false;
     const definitionRelays = mergeQuestionnaireRelayHints(
@@ -1768,16 +1771,16 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           return;
         }
         cacheDefinitionForVoting(latest);
-        setQuestionnaireTitle(resolveLocalised(latest.title, "en") || "Questionnaire");
-        setQuestionnaireDescription(resolveLocalised(latest.description ?? "", "en"));
+        setQuestionnaireTitle(resolveLocalised(latest.title, locale) || "Questionnaire");
+        setQuestionnaireDescription(resolveLocalised(latest.description ?? "", locale));
         setQuestionnaireDefinition(latest);
-        setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(latest), activeBallotGroup));
+        setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(latest, locale), activeBallotGroup));
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [activeBallotGroup, activeInvite, contextPendingInvites, electionId, inviteContext.invite, snapshot?.blindIssuance, snapshot?.inviteMessage]);
+  }, [activeBallotGroup, activeInvite, contextPendingInvites, electionId, inviteContext.invite, locale, snapshot?.blindIssuance, snapshot?.inviteMessage]);
 
   useEffect(() => {
     const currentId = electionId.trim();
