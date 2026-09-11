@@ -13,7 +13,7 @@ import {
   questionnaireRelaysForMetadata,
 } from "./questionnaireRelays";
 import { shouldShowQuestion } from "./questionConditionEvaluator";
-import type { LocalisedText } from "./i18n/types";
+import { isLocalisedText, type LocalisedText } from "./i18n/types";
 
 /**
  * Conditional display: this question is only shown if the condition is met.
@@ -709,6 +709,78 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
   return { valid: errors.length === 0, errors };
 }
 
+/**
+ * Canonicalise a single `LocalisableText` value so every consumer sees the
+ * multilingual shape:
+ * - a plain string is upgraded to an English-only `LocalisedText` (`{ en }`),
+ *   which is how definitions published before multi-language support are read;
+ * - an existing `LocalisedText` object keeps every locale it carries (`en`, and
+ *   any `fr`/`ta` translations);
+ * - anything else is returned untouched so malformed payloads stay visible to
+ *   `validateQuestionnaireDefinition` instead of being silently rewritten.
+ */
+export function canonicaliseLocalisableText(value: unknown): unknown {
+  if (typeof value === "string") {
+    return { en: value };
+  }
+  if (isLocalisedText(value)) {
+    return { ...value, en: value.en };
+  }
+  return value;
+}
+
+function canonicaliseQuestionText(question: unknown): unknown {
+  if (!question || typeof question !== "object" || Array.isArray(question)) {
+    return question;
+  }
+  const next: Record<string, unknown> = { ...question };
+  if ("prompt" in next) {
+    next.prompt = canonicaliseLocalisableText(next.prompt);
+  }
+  if (Array.isArray(next.options)) {
+    next.options = next.options.map((option) => {
+      if (!option || typeof option !== "object" || Array.isArray(option)) {
+        return option;
+      }
+      const optionRecord: Record<string, unknown> = { ...option };
+      if ("label" in optionRecord) {
+        optionRecord.label = canonicaliseLocalisableText(optionRecord.label);
+      }
+      return optionRecord;
+    });
+  }
+  return next;
+}
+
+/**
+ * Canonicalise the localisable text fields of a questionnaire definition:
+ * `title`, `description`, every question `prompt` and every option `label`.
+ *
+ * Nostr definition events written before multi-language support carry plain
+ * strings in these fields.  Upgrading them to `LocalisedText` on the way in
+ * means downstream code always sees the multilingual shape, while definitions
+ * that already carry `LocalisedText` round-trip with all languages preserved.
+ *
+ * The transformation is idempotent and does not add, remove or reorder any
+ * other field, so it is safe to apply on both the publish and the parse path.
+ */
+export function canonicaliseQuestionnaireDefinitionText<T>(value: T): T {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const next: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  if ("title" in next) {
+    next.title = canonicaliseLocalisableText(next.title);
+  }
+  if (next.description !== undefined && next.description !== null) {
+    next.description = canonicaliseLocalisableText(next.description);
+  }
+  if (Array.isArray(next.questions)) {
+    next.questions = next.questions.map(canonicaliseQuestionText);
+  }
+  return next as T;
+}
+
 export function normalizeQuestionnaireDefinition(
   input: Omit<QuestionnaireDefinition, "responseMode" | "flowMode"> & {
     responseMode?: QuestionnaireResponseMode | null;
@@ -721,13 +793,18 @@ export function normalizeQuestionnaireDefinition(
       ? QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1
       : QUESTIONNAIRE_FLOW_MODE_LEGACY_PRIVATE_DM);
   const questionnaireRelays = questionnaireRelaysForMetadata(input.questionnaireRelays ?? []);
-  return {
+  const normalized: QuestionnaireDefinition = {
     ...input,
     responseMode,
     flowMode,
     protocolVersion: input.protocolVersion ?? QUESTIONNAIRE_PROTOCOL_VERSION_V1,
     ...(questionnaireRelays ? { questionnaireRelays } : { questionnaireRelays: undefined }),
   };
+  // Every definition that enters the app (parsed from a Nostr event, read from
+  // the local cache or rebuilt in memory) carries canonical `LocalisedText`
+  // text fields, so a definition published before multi-language support is
+  // read as English-only text rather than as a bare string.
+  return canonicaliseQuestionnaireDefinitionText(normalized);
 }
 
 export function validateQuestionnaireResponsePayload(input: {
