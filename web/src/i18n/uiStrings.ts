@@ -147,6 +147,25 @@ export const UI_STRINGS = {
   coordinatorPublishFailed: { en: "Publish failed", fr: "Échec de la publication", ta: "வெளியீடு தோல்வியடைந்தது" },
   coordinatorReadyToPublish: { en: "Ready to publish", fr: "Prêt à publier", ta: "வெளியிடத் தயார்" },
   coordinatorMoveQuestionsBack: { en: "Move questions back to Main before removing this voter group.", fr: "Déplacez les questions vers Principal avant de supprimer ce groupe d'électeurs.", ta: "இந்த வாக்காளர் குழுவை அகற்றும் முன் கேள்விகளை முதன்மைக்கு நகர்த்தவும்." },
+
+  // ── Paper ballots (coordinator) ──────────────────────────────────
+  paperBallotsTitle: { en: "Paper ballots", fr: "Bulletins papier", ta: "காகித வாக்குச்சீட்டுகள்" },
+  paperBallotsIntro: { en: "Generate paper ballots with fresh voter keypairs (nsec/npub). Each ballot prints the questionnaire, the voter identity and the voting instructions. Print them and hand them to voters who cannot use the digital client.", fr: "Générez des bulletins papier avec de nouvelles paires de clés (nsec/npub). Chaque bulletin imprime le questionnaire, l'identité de l'électeur et les instructions de vote. Imprimez-les et remettez-les aux électeurs qui ne peuvent pas utiliser le client numérique.", ta: "புதிய வாக்காளர் விசை ஜோடிகளுடன் (nsec/npub) காகித வாக்குச்சீட்டுகளை உருவாக்குங்கள். ஒவ்வொரு வாக்குச்சீட்டிலும் கேள்வித்தாள், வாக்காளர் அடையாளம் மற்றும் வாக்களிக்கும் வழிமுறைகள் அச்சிடப்படும். அவற்றை அச்சிட்டு, மின்னணு செயலியைப் பயன்படுத்த முடியாத வாக்காளர்களிடம் கொடுங்கள்." },
+  paperBallotsSecurityNote: { en: "A paper ballot carries a private key (nsec). Print it on a trusted printer and hand it to its voter in person.", fr: "Un bulletin papier contient une clé privée (nsec). Imprimez-le sur une imprimante de confiance et remettez-le en main propre à son électeur.", ta: "காகித வாக்குச்சீட்டில் தனிப்பட்ட விசை (nsec) உள்ளது. நம்பகமான அச்சுப்பொறியில் அச்சிட்டு, வாக்காளரிடம் நேரடியாகக் கொடுங்கள்." },
+  paperBallotsCountLabel: { en: "Number of ballots", fr: "Nombre de bulletins", ta: "வாக்குச்சீட்டுகளின் எண்ணிக்கை" },
+  paperBallotsGenerate: { en: "Generate paper ballots", fr: "Générer les bulletins papier", ta: "காகித வாக்குச்சீட்டுகளை உருவாக்கு" },
+  paperBallotsGenerating: { en: "Generating...", fr: "Génération...", ta: "உருவாக்கப்படுகிறது..." },
+  paperBallotsNoQuestionnaire: { en: "Publish a questionnaire before generating paper ballots.", fr: "Publiez un questionnaire avant de générer des bulletins papier.", ta: "காகித வாக்குச்சீட்டுகளை உருவாக்கும் முன் கேள்வித்தாளை வெளியிடுங்கள்." },
+  paperBallotsNoDefinition: { en: "This questionnaire is not cached on this device, so its definition could not be loaded.", fr: "Ce questionnaire n'est pas mis en cache sur cet appareil ; sa définition n'a pas pu être chargée.", ta: "இந்தக் கேள்வித்தாள் இந்தச் சாதனத்தில் சேமிக்கப்படவில்லை; அதன் வரையறையை ஏற்ற முடியவில்லை." },
+  paperBallotsInvalidCount: { en: "Enter a whole number of ballots between 1 and 500.", fr: "Saisissez un nombre entier de bulletins entre 1 et 500.", ta: "1 முதல் 500 வரை முழு எண்ணிக்கையில் வாக்குச்சீட்டுகளை உள்ளிடுங்கள்." },
+  paperBallotsAdmittedHint: { en: "Admitted voters: {count}", fr: "Électeurs admis : {count}", ta: "அனுமதிக்கப்பட்ட வாக்காளர்கள்: {count}" },
+  paperBallotsResultsTitle: { en: "Generated ballots", fr: "Bulletins générés", ta: "உருவாக்கப்பட்ட வாக்குச்சீட்டுகள்" },
+  paperBallotsReady: { en: "Ballots generated: {count}", fr: "Bulletins générés : {count}", ta: "உருவாக்கப்பட்ட வாக்குச்சீட்டுகள்: {count}" },
+  paperBallotsPartial: { en: "Ballots generated: {count}. Failed: {errors}.", fr: "Bulletins générés : {count}. Échecs : {errors}.", ta: "உருவாக்கப்பட்டவை: {count}. தோல்வி: {errors}." },
+  paperBallotsFailed: { en: "Could not generate paper ballots: {message}", fr: "Impossible de générer les bulletins papier : {message}", ta: "காகித வாக்குச்சீட்டுகளை உருவாக்க முடியவில்லை: {message}" },
+  paperBallotsPrintAll: { en: "Print all", fr: "Tout imprimer", ta: "அனைத்தையும் அச்சிடு" },
+  paperBallotsViewBallot: { en: "View ballot {index}", fr: "Voir le bulletin {index}", ta: "வாக்குச்சீட்டு {index} ஐப் பார்" },
+  paperBallotsHideBallot: { en: "Hide ballot {index}", fr: "Masquer le bulletin {index}", ta: "வாக்குச்சீட்டு {index} ஐ மறை" },
 } as const satisfies Record<string, LocalisedText>;
 
 export type UiStringKey = keyof typeof UI_STRINGS;
