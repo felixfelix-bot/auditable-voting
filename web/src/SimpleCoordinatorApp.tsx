@@ -56,6 +56,7 @@ import {
   type CoordinatorControlReadMode,
 } from "./nostr/subscribeCoordinatorControl";
 import SimpleCollapsibleSection from "./SimpleCollapsibleSection";
+import PaperBallotBatchPanel from "./PaperBallotBatchPanel";
 import SimpleIdentityPanel from "./SimpleIdentityPanel";
 import SimpleMessagesPanel from "./SimpleMessagesPanel";
 import SimpleRelayPanel from "./SimpleRelayPanel";
@@ -9368,6 +9369,17 @@ export default function SimpleCoordinatorApp({ accountMenu, onOpenObserver }: Si
 	                  </div>
 	                </div>
 	              </SimpleCollapsibleSection>
+            </div>
+            <div id='coordinator-paper-ballots-section'>
+              <SimpleCollapsibleSection
+                title={t('paperBallotsTitle')}
+                defaultCollapsed
+              >
+                <PaperBallotBatchPanel
+                  questionnaireId={optionAElectionId}
+                  admittedVoterCount={admittedVoterEntries.length}
+                />
+              </SimpleCollapsibleSection>
             </div>
             <div id='coordinator-resident-admission-section'>
               <ResidentOtpAdmission />

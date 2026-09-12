@@ -15504,3 +15504,75 @@ body.demo-page .demo-workspace {
     text-align: center;
   }
 }
+
+/* ── F3-T3: coordinator batch paper ballot generation ─────────────── */
+.simple-paper-ballot-section {
+  display: grid;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.simple-paper-ballot-count-input {
+  width: 90px;
+}
+
+.simple-paper-ballot-warning {
+  border-left: 3px solid var(--simple-border-strong, #3a4c59);
+  padding-left: 8px;
+}
+
+.simple-paper-ballot-results {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.simple-paper-ballot-list {
+  display: grid;
+  gap: 8px;
+}
+
+.simple-paper-ballot-item {
+  border: 1px solid var(--simple-border, #2a3a46);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.simple-paper-ballot-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.simple-paper-ballot-item-title {
+  font-family: "Courier New", Courier, monospace;
+  word-break: break-all;
+}
+
+.simple-paper-ballot-preview {
+  margin-top: 12px;
+  border-top: 1px solid var(--simple-border, #2a3a46);
+  padding-top: 12px;
+  overflow-x: auto;
+}
+
+/* ── F3-T3: print-only copy of a generated paper-ballot batch ──────── */
+/*
+ * The app hides `#root` in print, and the on-screen ballot preview lives
+ * inside it, so a batch is re-rendered into a print-only root portalled to
+ * <body>.  That root carries `.ballot-print` so it survives the existing
+ * `body > *:not(.ballot-print)` rule, and stays out of the way on screen.
+ */
+@media screen {
+  .simple-paper-ballot-print-only {
+    display: none !important;
+  }
+}
+
+@media print {
+  .simple-paper-ballot-print-only > .ballot-print + .ballot-print {
+    break-before: page;
+    page-break-before: always;
+  }
+}
