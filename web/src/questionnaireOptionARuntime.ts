@@ -981,7 +981,13 @@ function toQuestionnaireResponseAnswers(
   });
 }
 
-function fromQuestionnaireResponseAnswers(answers: QuestionnaireResponseAnswer[]): QuestionnaireAnswer[] {
+/**
+ * Convert protocol answers (as the questionnaire panels render them) into the
+ * Option A ballot payload shape.  Shared with the paper-ballot manual entry
+ * screen so a manually entered ballot carries exactly the payload the digital
+ * voter flow would have produced.
+ */
+export function fromQuestionnaireResponseAnswers(answers: QuestionnaireResponseAnswer[]): QuestionnaireAnswer[] {
   return answers.map((answer) => {
     if (answer.answerType === "yes_no") {
       return {

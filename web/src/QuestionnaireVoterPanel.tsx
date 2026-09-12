@@ -3,7 +3,7 @@ import { generateSecretKey, nip19, type NostrEvent } from "nostr-tools";
 import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQuestionnaireReadRelays, parseQuestionnaireDefinitionEvent, parseQuestionnaireResponseEnvelope, parseQuestionnaireStateEvent, publishEncryptedQuestionnaireResponse, queryQuestionnaireEvents, QUESTIONNAIRE_DEFINITION_KIND, QUESTIONNAIRE_RESPONSE_PRIVATE_KIND, QUESTIONNAIRE_RESULT_SUMMARY_KIND, QUESTIONNAIRE_STATE_KIND, subscribeQuestionnaireEventKinds } from "./questionnaireNostr";
 import { formatQuestionnaireStateLabel, formatQuestionnaireTokenStatusLabel, parseQuestionnaireResultSummaryEvent, selectLatestQuestionnaireDefinition, selectLatestQuestionnaireState } from "./questionnaireRuntime";
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
-import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireQuestion, type QuestionnaireResponseAnswer, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
+import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
 import { resolveLocalised } from "./i18n/resolveLocale";
 import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
 import TokenFingerprint from "./TokenFingerprint";
@@ -11,8 +11,11 @@ import { deriveActorDisplayId } from "./actorDisplay";
 import { resolveQuestionnaireResponderNpub } from "./questionnaireResponderIdentity";
 import QuestionnaireOptionAVoterPanel from "./QuestionnaireOptionAVoterPanel";
 import { hasVoterInviteContextInUrl } from "./questionnaireInvite";
-import { UiButton, UiSelect, UiTextArea } from "./ui/DesignLayer";
-import { shouldShowQuestion } from "./questionConditionEvaluator";
+import { UiButton, UiSelect } from "./ui/DesignLayer";
+import QuestionnaireAnswerFields, {
+  buildVisibleResponseAnswers,
+  type QuestionnaireAnswerState,
+} from "./QuestionnaireAnswerFields";
 
 const RESTORED_QUESTIONNAIRE_IDS_STORAGE_KEY = "voter.restored-questionnaire-ids.v1";
 const PARTICIPATION_HISTORY_STORAGE_KEY = "voter.questionnaire-participation-history.v1";
@@ -23,23 +26,6 @@ const MAX_PARTICIPATION_HISTORY_ENTRIES = 16;
 const QUESTIONNAIRE_DISCOVERY_BACKFILL_RETRY_MAX = 1;
 const QUESTIONNAIRE_DISCOVERY_BACKFILL_RETRY_BASE_DELAY_MS = 1500;
 
-type QuestionnaireAnswerState = Record<string, boolean | string | string[]>;
-
-function getRankRequirementState(optionCount: number, minimumRanked: number, selectedCount: number) {
-  const minimum = Math.max(0, Math.min(optionCount, Math.floor(minimumRanked)));
-  const missing = Math.max(0, minimum - selectedCount);
-  return {
-    minimum,
-    missing,
-    label: minimum > 0
-      ? missing > 0
-        ? `Choose ${missing} more`
-        : null
-      : selectedCount > 0
-        ? null
-        : "Optional",
-  };
-}
 type SelectorLifecycle = "open" | "published" | "draft" | "closed" | "counted" | "unknown";
 type QuestionnaireSelectorEntry = {
   questionnaireId: string;
@@ -338,86 +324,6 @@ function choosePreferredEntry(
     return candidateActive ? candidate : current;
   }
   return candidate.discoveredAt >= current.discoveredAt ? candidate : current;
-}
-
-function buildResponseAnswers(definition: QuestionnaireDefinition, answerState: QuestionnaireAnswerState): QuestionnaireResponseAnswer[] {
-  const answers: QuestionnaireResponseAnswer[] = [];
-
-  for (const question of definition.questions) {
-    const value = answerState[question.questionId];
-
-    if (question.type === "yes_no") {
-      if (typeof value === "boolean") {
-        answers.push({
-          questionId: question.questionId,
-          answerType: "yes_no",
-          value,
-        });
-      }
-      continue;
-    }
-
-    if (question.type === "multiple_choice") {
-      const selectedOptionIds = Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-        : [];
-      if (selectedOptionIds.length > 0) {
-        answers.push({
-          questionId: question.questionId,
-          answerType: "multiple_choice",
-          selectedOptionIds,
-        });
-      }
-      continue;
-    }
-
-    if (question.type === "rank") {
-      const validOptions = new Set(question.options.map((option) => option.optionId));
-      const rankedOptionIds = Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string" && validOptions.has(entry))
-        : [];
-      if (rankedOptionIds.length > 0) {
-        answers.push({
-          questionId: question.questionId,
-          answerType: "rank",
-          rankedOptionIds,
-        });
-      }
-      continue;
-    }
-
-    const text = typeof value === "string" ? value.trim() : "";
-    if (text.length > 0) {
-      answers.push({
-        questionId: question.questionId,
-        answerType: "free_text",
-        text,
-      });
-    }
-  }
-
-  return answers;
-}
-
-function buildAnsweredMap(definition: QuestionnaireDefinition, answerState: QuestionnaireAnswerState): Map<string, QuestionnaireResponseAnswer> {
-  const answers = buildResponseAnswers(definition, answerState);
-  const map = new Map<string, QuestionnaireResponseAnswer>();
-  for (const answer of answers) {
-    map.set(answer.questionId, answer);
-  }
-  return map;
-}
-
-function buildVisibleResponseAnswers(definition: QuestionnaireDefinition, answerState: QuestionnaireAnswerState): QuestionnaireResponseAnswer[] {
-  const answeredMap = buildAnsweredMap(definition, answerState);
-  const questionMap = new Map(definition.questions.map((question) => [question.questionId, question]));
-  return buildResponseAnswers(definition, answerState).filter((answer) => {
-    const question = questionMap.get(answer.questionId);
-    if (!question) {
-      return false;
-    }
-    return shouldShowQuestion(question, answeredMap, questionMap);
-  });
 }
 
 function parseLatestResultSummary(events: Awaited<ReturnType<typeof fetchQuestionnaireEvents>>): QuestionnaireResultSummary | null {
@@ -1161,14 +1067,6 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
   }, [definition, responseLocked, state, submitInFlight, tokenStatus]);
   const selectedQuestionnaireOptions = selectorEntries.map((entry) => entry.questionnaireId);
   const selectedQuestionnaireEntry = selectorEntries.find((entry) => entry.questionnaireId === questionnaireId) ?? null;
-  const answeredMap = useMemo(
-    () => (definition ? buildAnsweredMap(definition, answerState) : new Map<string, QuestionnaireResponseAnswer>()),
-    [definition, answerState],
-  );
-  const questionMap = useMemo(
-    () => (definition ? new Map(definition.questions.map((question) => [question.questionId, question])) : new Map<string, QuestionnaireQuestion>()),
-    [definition],
-  );
 
   useEffect(() => {
     setResponsePipelineDiagnostics((current) => ({
@@ -1265,6 +1163,16 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
       }
       return { ...current, [questionId]: [...existing, optionId] };
     });
+  }
+
+  function setFreeTextAnswer(questionId: string, value: string) {
+    if (responseLocked) {
+      return;
+    }
+    setAnswerState((current) => ({
+      ...current,
+      [questionId]: value,
+    }));
   }
 
   function addRankedAnswer(questionId: string, optionId: string) {
@@ -1695,227 +1603,18 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
 
       {definition ? (
         <div className='simple-questionnaire-voter-list'>
-          {definition.questions.map((question, index) => {
-            if (!shouldShowQuestion(question, answeredMap, questionMap)) {
-              return null;
-            }
-            const questionPrompt = resolveLocalised(question.prompt, locale).trim() || t("voterUntitledQuestion");
-            const requirementLabel = question.required ? t("statusRequired") : t("statusOptional");
-            if (question.type === "yes_no") {
-              const selected = answerState[question.questionId];
-              const requirementText = typeof selected === "boolean" ? null : requirementLabel;
-              return (
-                <article key={question.questionId} className={`simple-questionnaire-voter-card${responseLocked ? " is-response-locked" : ""}`}>
-                  <div className='simple-questionnaire-voter-heading'>
-                    <h4 className='simple-questionnaire-voter-prompt'>Q{index + 1}: {questionPrompt}</h4>
-                    {requirementText ? (
-                      <p className={`simple-questionnaire-voter-requirement${question.required ? "" : " is-optional"}`}>
-                        {requirementText}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className='simple-vote-button-grid simple-questionnaire-yes-no-grid'>
-                    <UiButton
-                      icon='check'
-                      className={`simple-voter-choice simple-questionnaire-yes-no-choice simple-voter-choice-yes${selected === true ? " is-active" : ""}`}
-                      onPress={() => setYesNoAnswer(question.questionId, true)}
-                      isDisabled={responseLocked}
-                    >
-                      Yes
-                    </UiButton>
-                    <UiButton
-                      icon='cancel'
-                      className={`simple-voter-choice simple-questionnaire-yes-no-choice simple-voter-choice-no${selected === false ? " is-active" : ""}`}
-                      onPress={() => setYesNoAnswer(question.questionId, false)}
-                      isDisabled={responseLocked}
-                    >
-                      No
-                    </UiButton>
-                  </div>
-                </article>
-              );
-            }
-
-            if (question.type === "multiple_choice") {
-              const selected = Array.isArray(answerState[question.questionId])
-                ? (answerState[question.questionId] as string[])
-                : [];
-              const requirementText = selected.length > 0 ? null : requirementLabel;
-              return (
-                <article key={question.questionId} className={`simple-questionnaire-voter-card${responseLocked ? " is-response-locked" : ""}`}>
-                  <div className='simple-questionnaire-voter-heading'>
-                    <h4 className='simple-questionnaire-voter-prompt'>Q{index + 1}: {questionPrompt}</h4>
-                    {requirementText ? (
-                      <p className={`simple-questionnaire-voter-requirement${question.required ? "" : " is-optional"}`}>
-                        {requirementText}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className='simple-questionnaire-choice-list'>
-                    {question.options.map((option) => (
-                      <label key={option.optionId} className='simple-questionnaire-choice-row'>
-                        <input
-                          type={question.multiSelect ? "checkbox" : "radio"}
-                          name={question.questionId}
-                          checked={selected.includes(option.optionId)}
-                          disabled={responseLocked}
-                          onChange={() => setMultipleChoiceAnswer(question.questionId, option.optionId, question.multiSelect)}
-                        />
-                        <span>{resolveLocalised(option.label, locale)}</span>
-                      </label>
-                    ))}
-                  </div>
-                </article>
-              );
-            }
-
-            if (question.type === "rank") {
-              const ranked = Array.isArray(answerState[question.questionId])
-                ? (answerState[question.questionId] as string[])
-                : [];
-              const rankedSet = new Set(ranked);
-              const unrankedOptions = question.options.filter((option) => !rankedSet.has(option.optionId));
-              const minimumRanked = Math.max(0, Math.min(question.options.length, Math.floor(question.minimumRanked)));
-              const rankRequirement = getRankRequirementState(question.options.length, minimumRanked, ranked.length);
-              const requirementText = rankRequirement.label;
-              return (
-                <article key={question.questionId} className={`simple-questionnaire-voter-card${responseLocked ? " is-response-locked" : ""}`}>
-                  <div className='simple-questionnaire-voter-heading'>
-                    <h4 className='simple-questionnaire-voter-prompt'>Q{index + 1}: {questionPrompt}</h4>
-                    {requirementText ? (
-                      <p className={`simple-questionnaire-voter-requirement${rankRequirement.missing > 0 ? " is-needed" : " is-optional"}`}>
-                        {requirementText}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className='simple-questionnaire-rank-voter-grid'>
-                    <div className='simple-questionnaire-choice-list'>
-                      {ranked.length > 0 ? ranked.map((optionId, rankedIndex) => {
-                        const option = question.options.find((entry) => entry.optionId === optionId);
-                        if (!option) {
-                          return null;
-                        }
-                            return (
-                              <div
-                                key={option.optionId}
-                                className={`simple-questionnaire-rank-row${responseLocked ? " is-response-locked" : ""}`}
-                                role='button'
-                                tabIndex={responseLocked ? -1 : 0}
-                                aria-label={`Remove ${option.label} as #${rankedIndex + 1}`}
-                                aria-disabled={responseLocked}
-                                onClick={() => {
-                                  if (responseLocked) {
-                                    return;
-                                  }
-                                  removeRankedAnswer(question.questionId, option.optionId);
-                                }}
-                                onKeyDown={(event) => {
-                                  if (responseLocked) {
-                                    return;
-                                  }
-                                  if (event.key !== "Enter" && event.key !== " ") {
-                                    return;
-                                  }
-                                  event.preventDefault();
-                                  removeRankedAnswer(question.questionId, option.optionId);
-                                }}
-                              >
-                                <span className='simple-questionnaire-rank-selected'>
-                                  <span className='simple-questionnaire-rank-selected-option'>
-                                    <span className='simple-questionnaire-rank-inline-number'>{rankedIndex + 1}. </span>
-                                    <span>{resolveLocalised(option.label, locale)}</span>
-                                  </span>
-                                  <span className='simple-questionnaire-rank-remove-prefix'>Remove as #{rankedIndex + 1}</span>
-                                </span>
-                                <div className='simple-questionnaire-rank-actions'>
-                                  <UiButton
-                                    icon='uploadLine'
-                                    iconOnly
-                                    className='simple-voter-secondary simple-questionnaire-rank-action'
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      moveRankedAnswer(question.questionId, option.optionId, -1);
-                                    }}
-                                    isDisabled={responseLocked || rankedIndex === 0}
-                                    aria-label='Move up'
-                                  />
-                                  <UiButton
-                                    icon='downloadLine'
-                                    iconOnly
-                                    className='simple-voter-secondary simple-questionnaire-rank-action'
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      moveRankedAnswer(question.questionId, option.optionId, 1);
-                                    }}
-                                    isDisabled={responseLocked || rankedIndex === ranked.length - 1}
-                                    aria-label='Move down'
-                                  />
-                                </div>
-                              </div>
-                            );
-                      }) : null}
-                    </div>
-                    {unrankedOptions.length > 0 ? (
-                      <div className='simple-questionnaire-choice-list'>
-                        {unrankedOptions.map((option) => (
-                          <UiButton
-                            key={option.optionId}
-                            icon='add'
-                            className='simple-voter-secondary simple-questionnaire-rank-add'
-                            onPress={() => addRankedAnswer(question.questionId, option.optionId)}
-                            isDisabled={responseLocked}
-                          >
-                            <span className='simple-questionnaire-rank-add-option'>{resolveLocalised(option.label, locale)}</span>
-                            <span className='simple-questionnaire-rank-add-prefix'>Add as #{ranked.length + 1}</span>
-                          </UiButton>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            }
-
-            const text = typeof answerState[question.questionId] === "string"
-              ? (answerState[question.questionId] as string)
-              : "";
-            const requirementText = text.trim() ? null : requirementLabel;
-            return (
-              <article key={question.questionId} className={`simple-questionnaire-voter-card${responseLocked ? " is-response-locked" : ""}`}>
-                <div className='simple-questionnaire-voter-heading'>
-                  <h4 className='simple-questionnaire-voter-prompt'>Q{index + 1}: {questionPrompt}</h4>
-                  {requirementText ? (
-                    <p className={`simple-questionnaire-voter-requirement${question.required ? "" : " is-optional"}`}>
-                      {requirementText}
-                    </p>
-                  ) : null}
-                </div>
-                <UiTextArea
-                  label='Additional comments'
-                  textAreaClassName='simple-voter-input simple-questionnaire-free-text'
-                  isDisabled={responseLocked}
-                  textAreaProps={{
-                    id: `questionnaire-free-text-${question.questionId}`,
-                    rows: 4,
-                    maxLength: question.maxLength,
-                    placeholder: 'Type your response here...',
-                    value: text,
-                    onChange: (event) => {
-                      if (responseLocked) {
-                        return;
-                      }
-                      const nextValue = event.target.value;
-                      setAnswerState((current) => ({
-                        ...current,
-                        [question.questionId]: nextValue,
-                      }));
-                    },
-                  }}
-                />
-                <p className='simple-questionnaire-voter-helper'>Max {question.maxLength} characters.</p>
-              </article>
-            );
-          })}
+          <QuestionnaireAnswerFields
+            definition={definition}
+            answerState={answerState}
+            locale={locale}
+            responseLocked={responseLocked}
+            onYesNoAnswer={setYesNoAnswer}
+            onMultipleChoiceAnswer={setMultipleChoiceAnswer}
+            onAddRankedAnswer={addRankedAnswer}
+            onRemoveRankedAnswer={removeRankedAnswer}
+            onMoveRankedAnswer={moveRankedAnswer}
+            onFreeTextAnswer={setFreeTextAnswer}
+          />
 
           <UiButton
             icon={submitInFlight ? "spinner" : "send"}

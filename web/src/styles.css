@@ -15576,3 +15576,67 @@ body.demo-page .demo-workspace {
     page-break-before: always;
   }
 }
+
+/* ── F3-T4: paper-ballot manual entry ─────────────────────────────── */
+.simple-paper-ballot-entry {
+  display: grid;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.simple-paper-ballot-entry-warning {
+  border-left: 3px solid var(--simple-border-strong, #3a4c59);
+  padding-left: 8px;
+  font-weight: 600;
+}
+
+.simple-paper-ballot-entry-identity,
+.simple-paper-ballot-entry-answers,
+.simple-paper-ballot-entry-credential {
+  display: grid;
+  gap: 10px;
+}
+
+.simple-voter-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.simple-paper-ballot-entry-identity-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--simple-border, #2a3a46);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.simple-paper-ballot-entry-identity-details {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 220px;
+}
+
+.simple-paper-ballot-entry-identity-label {
+  margin: 0;
+  font-size: 0.85em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.simple-paper-ballot-entry-identity-npub {
+  margin: 0;
+  font-family: "Courier New", Courier, monospace;
+  word-break: break-all;
+}
+
+.simple-paper-ballot-entry-identity-hint {
+  margin: 0;
+}
+
+.simple-paper-ballot-entry-status {
+  margin: 0;
+  font-weight: 600;
+}
