@@ -413,6 +413,23 @@ function hasLocalisedEn(value: LocalisableText | null | undefined): boolean {
   return false;
 }
 
+/**
+ * Check whether a `LocalisableText` carries any text at all, in any locale.
+ * Used for optional fields: an empty value is the same as "not provided", so a
+ * questionnaire whose optional description was left blank stays publishable,
+ * while a value that only carries `fr`/`ta` text still has to supply `en`
+ * because English is the fallback base for every reader.
+ */
+function hasAnyLocalisedText(value: LocalisableText | null | undefined): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).some((entry) => typeof entry === "string" && entry.trim().length > 0);
+  }
+  return false;
+}
+
 export function questionnaireUsesPerQuestionCredentials(definition: Pick<QuestionnaireDefinition, "ballotCredentialMode"> | null | undefined) {
   return definition?.ballotCredentialMode === "per_question";
 }
@@ -550,7 +567,7 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
   if (!hasLocalisedEn(input.title)) {
     errors.push("title_missing_en");
   }
-  if (input.description !== undefined && !hasLocalisedEn(input.description)) {
+  if (input.description !== undefined && input.description !== null && hasAnyLocalisedText(input.description) && !hasLocalisedEn(input.description)) {
     errors.push("description_missing_en");
   }
   if (!isNonEmpty(input.coordinatorPubkey)) {

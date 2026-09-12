@@ -432,6 +432,57 @@ describe("questionnaireProtocol", () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it("accepts an optional description that is empty localised text", () => {
+    // The builder leaves `description` in the definition even when the
+    // coordinator leaves the optional field blank. An empty value means "no
+    // description", not "missing English translation".
+    const emptyObjectDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { en: "" },
+    };
+    const emptyStringDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: "",
+    };
+    const omittedDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: undefined,
+    };
+
+    for (const definition of [emptyObjectDescription, emptyStringDescription, omittedDescription]) {
+      const result = validateQuestionnaireDefinition(definition);
+      expect(result.errors).not.toContain("description_missing_en");
+      expect(result.valid).toBe(true);
+    }
+  });
+
+  it("rejects a description with text in another locale but no en", () => {
+    // English is the fallback base for every reader, so a translated
+    // description still has to carry `en` as soon as it carries any text.
+    const definition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { fr: "Veuillez répondre à toutes les questions obligatoires." },
+    } as unknown as QuestionnaireDefinition;
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("description_missing_en");
+  });
+
+  it("treats a whitespace-only description as no description", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { en: "   " },
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.errors).not.toContain("description_missing_en");
+    expect(result.valid).toBe(true);
+  });
+
   it("accepts LocalisedText with only en (fr/ta optional)", () => {
     const definition: QuestionnaireDefinition = {
       ...buildDefinition(),
