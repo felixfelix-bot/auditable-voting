@@ -24,6 +24,12 @@ const hasTsx = existsSync(tsxBin);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Every test below spawns a fresh `tsx` process. tsx boots in ~1-2s on an idle
+// machine but can take 5-10s on a loaded one, which is longer than vitest's 5s
+// default timeout — the child still finishes (spawnSync allows 120s), so the
+// default timeout produced load-dependent false failures. Give the spawns room.
+const CLI_TIMEOUT_MS = 60_000;
+
 function tempDir() {
   return mkdtempSync(join(tmpdir(), "otp-send-email-"));
 }
@@ -76,7 +82,7 @@ describe.skipIf(!hasTsx)("otp-send-email CLI (dry run)", () => {
     expect(stdout).toContain("[dry run] no network calls, no payments, no ledger writes.");
     // The ledger is only created by a real run.
     expect(existsSync(join(dir, "codes.csv.results.csv"))).toBe(false);
-  });
+  }, CLI_TIMEOUT_MS);
 
   it("skips recipients already recorded as sent and warns about the last send of the day", () => {
     const dir = tempDir();
@@ -99,7 +105,7 @@ describe.skipIf(!hasTsx)("otp-send-email CLI (dry run)", () => {
     // 99 sends are already recorded today, so only two of the plan fit.
     expect(stdout).toContain("Day cap:  99/100 used today (this run: 1)");
     expect(stdout).toContain("Cost:     2 x 100 sats = 200 sats");
-  });
+  }, CLI_TIMEOUT_MS);
 
   it("regenerates a code whose issued_at is older than the 24h admission TTL", () => {
     const dir = tempDir();
@@ -118,12 +124,12 @@ describe.skipIf(!hasTsx)("otp-send-email CLI (dry run)", () => {
     expect(status).toBe(0);
     expect(stdout).toContain("would send -> 101 alice@example.com (regenerating code)");
     expect(stdout).toMatch(/older than the 24h admission TTL/);
-  });
+  }, CLI_TIMEOUT_MS);
 
   it("fails with usage guidance when --csv is missing", () => {
     const { status, stderr } = runCli(["--dry-run"]);
 
     expect(status).toBe(2);
     expect(stderr).toContain("--csv <path> is required");
-  });
+  }, CLI_TIMEOUT_MS);
 });
