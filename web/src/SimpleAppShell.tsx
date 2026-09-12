@@ -49,6 +49,7 @@ const ACCOUNT_MENU_ROLE_OPTIONS: Array<{ role: SimpleRole; labelKey: UiStringKey
 const VOTER_SECTION_OPTIONS: Array<{ tab: VoterTab; labelKey: UiStringKey; icon: string }> = [
   { tab: "configure", labelKey: "tabFindOrganiser", icon: "join" },
   { tab: "vote", labelKey: "tabVote", icon: "vote" },
+  { tab: "paperBallot", labelKey: "tabEnterPaperBallot", icon: "clipboard" },
   { tab: "messages", labelKey: "tabMessages", icon: "messages" },
   { tab: "settings", labelKey: "tabSettings", icon: "settings" },
 ];
@@ -57,6 +58,9 @@ const PUBLIC_LINK_FRESH_VOTER_PARAM = "fresh_voter";
 const PUBLIC_LINK_FRESH_VOTER_STATE = "auditableVotingFreshVoterCreated";
 
 function voterTabIconName(icon: string): UiIconName {
+  if (icon === "clipboard") {
+    return "clipboard";
+  }
   if (icon === "messages") {
     return "message";
   }

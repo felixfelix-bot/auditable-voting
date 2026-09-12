@@ -166,6 +166,32 @@ export const UI_STRINGS = {
   paperBallotsPrintAll: { en: "Print all", fr: "Tout imprimer", ta: "அனைத்தையும் அச்சிடு" },
   paperBallotsViewBallot: { en: "View ballot {index}", fr: "Voir le bulletin {index}", ta: "வாக்குச்சீட்டு {index} ஐப் பார்" },
   paperBallotsHideBallot: { en: "Hide ballot {index}", fr: "Masquer le bulletin {index}", ta: "வாக்குச்சீட்டு {index} ஐ மறை" },
+
+  // ── Paper ballot manual entry (F3-T4) ────────────────────────────
+  tabEnterPaperBallot: { en: "Enter paper ballot", fr: "Saisir un bulletin papier", ta: "காகித வாக்குச்சீட்டை உள்ளிடு" },
+  paperBallotEntryTitle: { en: "Enter a paper ballot", fr: "Saisir un bulletin papier", ta: "காகித வாக்குச்சீட்டை உள்ளிடவும்" },
+  paperBallotEntryIntro: { en: "Enter the answers from a completed paper ballot so it is submitted through the same flow as a digital vote. The private key printed on the ballot is used as the voter identity.", fr: "Saisissez les réponses d'un bulletin papier rempli afin qu'il soit soumis par le même circuit qu'un vote numérique. La clé privée imprimée sur le bulletin sert d'identité d'électeur.", ta: "நிரப்பப்பட்ட காகித வாக்குச்சீட்டின் பதில்களை உள்ளிடுங்கள்; அவை மின்னணு வாக்குகளின் அதே வழிமுறையில் சமர்ப்பிக்கப்படும். வாக்குச்சீட்டில் அச்சிடப்பட்ட தனிப்பட்ட விசையே வாக்காளர் அடையாளமாகும்." },
+  paperBallotEntrySecurityNote: { en: "Only enter a ballot that its voter has handed back. Anyone holding the printed key can vote as that voter.", fr: "Ne saisissez qu'un bulletin remis par son électeur. Toute personne détenant la clé imprimée peut voter à la place de cet électeur.", ta: "வாக்காளர் திருப்பித் தந்த வாக்குச்சீட்டை மட்டுமே உள்ளிடுங்கள். அச்சிடப்பட்ட விசையை வைத்திருப்பவர் யாராலும் அந்த வாக்காளராக வாக்களிக்க முடியும்." },
+  paperBallotEntryNoQuestionnaire: { en: "This questionnaire is not cached on this device, so the ballot cannot be entered here. Open or publish the questionnaire first.", fr: "Ce questionnaire n'est pas mis en cache sur cet appareil ; le bulletin ne peut donc pas être saisi ici. Ouvrez ou publiez d'abord le questionnaire.", ta: "இந்தக் கேள்வித்தாள் இந்தச் சாதனத்தில் சேமிக்கப்படவில்லை, எனவே வாக்குச்சீட்டை இங்கே உள்ளிட முடியாது. முதலில் கேள்வித்தாளைத் திறக்கவும் அல்லது வெளியிடவும்." },
+  paperBallotEntryNsecLabel: { en: "Ballot private key (nsec)", fr: "Clé privée du bulletin (nsec)", ta: "வாக்குச்சீட்டு தனிப்பட்ட விசை (nsec)" },
+  paperBallotEntryNsecHint: { en: "Type or paste the nsec printed on the ballot.", fr: "Saisissez ou collez le nsec imprimé sur le bulletin.", ta: "வாக்குச்சீட்டில் அச்சிடப்பட்ட nsec ஐத் தட்டச்சு செய்யவும் அல்லது ஒட்டவும்." },
+  paperBallotEntryInviteCodeLabel: { en: "Invite code (when the ballot carries one)", fr: "Code d'invitation (si le bulletin en comporte un)", ta: "அழைப்புக் குறியீடு (வாக்குச்சீட்டில் இருந்தால்)" },
+  paperBallotEntryInviteCodePlaceholder: { en: "Invite code", fr: "Code d'invitation", ta: "அழைப்புக் குறியீடு" },
+  paperBallotEntryConfirmIdentity: { en: "Confirm ballot identity", fr: "Confirmer l'identité du bulletin", ta: "வாக்குச்சீட்டு அடையாளத்தை உறுதிப்படுத்து" },
+  paperBallotEntryIdentityTitle: { en: "Ballot identity", fr: "Identité du bulletin", ta: "வாக்குச்சீட்டு அடையாளம்" },
+  paperBallotEntryVerifyIdentity: { en: "Check that this identity matches the ballot in your hand before entering answers.", fr: "Vérifiez que cette identité correspond au bulletin que vous avez en main avant de saisir les réponses.", ta: "பதில்களை உள்ளிடும் முன், இந்த அடையாளம் உங்கள் கையில் உள்ள வாக்குச்சீட்டுடன் பொருந்துகிறதா எனச் சரிபார்க்கவும்." },
+  paperBallotEntryChangeIdentity: { en: "Use a different ballot", fr: "Utiliser un autre bulletin", ta: "வேறு வாக்குச்சீட்டைப் பயன்படுத்து" },
+  paperBallotEntryAnswersTitle: { en: "Answers from the paper ballot", fr: "Réponses du bulletin papier", ta: "காகித வாக்குச்சீட்டின் பதில்கள்" },
+  paperBallotEntryMissingAnswers: { en: "Answer every required question before submitting.", fr: "Répondez à toutes les questions obligatoires avant de soumettre.", ta: "சமர்ப்பிக்கும் முன் கட்டாயக் கேள்விகள் அனைத்திற்கும் பதிலளியுங்கள்." },
+  paperBallotEntryNoCredential: { en: "This device holds no voting credential for this ballot, so it cannot be submitted here. Continue in the digital vote screen with the same key to request one, then submit.", fr: "Cet appareil ne détient aucun justificatif de vote pour ce bulletin ; il ne peut donc pas être soumis ici. Continuez dans l'écran de vote numérique avec la même clé pour en demander un, puis soumettez.", ta: "இந்தச் சாதனத்தில் இந்த வாக்குச்சீட்டுக்கான வாக்கு அனுமதிச்சீட்டு இல்லை, எனவே அதை இங்கே சமர்ப்பிக்க முடியாது. அதே விசையுடன் மின்னணு வாக்குத் திரையில் தொடர்ந்து ஒன்றைக் கோரி, பின்னர் சமர்ப்பிக்கவும்." },
+  paperBallotEntryOpenDigitalFlow: { en: "Continue in the digital vote screen", fr: "Continuer dans l'écran de vote numérique", ta: "மின்னணு வாக்குத் திரையில் தொடரவும்" },
+  paperBallotEntrySubmit: { en: "Submit paper ballot", fr: "Soumettre le bulletin papier", ta: "காகித வாக்குச்சீட்டைச் சமர்ப்பி" },
+  paperBallotEntrySubmitting: { en: "Submitting...", fr: "Soumission...", ta: "சமர்ப்பிக்கப்படுகிறது..." },
+  paperBallotEntrySubmitted: { en: "Paper ballot submitted. Submission: {id}", fr: "Bulletin papier soumis. Soumission : {id}", ta: "காகித வாக்குச்சீட்டு சமர்ப்பிக்கப்பட்டது. சமர்ப்பிப்பு: {id}" },
+  paperBallotEntrySubmitFailed: { en: "Could not submit the paper ballot: {message}", fr: "Impossible de soumettre le bulletin papier : {message}", ta: "காகித வாக்குச்சீட்டைச் சமர்ப்பிக்க முடியவில்லை: {message}" },
+  paperBallotEntryMissingNsec: { en: "Enter the private key printed on the ballot.", fr: "Saisissez la clé privée imprimée sur le bulletin.", ta: "வாக்குச்சீட்டில் அச்சிடப்பட்ட தனிப்பட்ட விசையை உள்ளிடுங்கள்." },
+  paperBallotEntryPublicKeyOnly: { en: "That is the ballot's public key. Enter the private key (nsec) printed on the ballot.", fr: "Il s'agit de la clé publique du bulletin. Saisissez la clé privée (nsec) imprimée sur le bulletin.", ta: "அது வாக்குச்சீட்டின் பொது விசை. வாக்குச்சீட்டில் அச்சிடப்பட்ட தனிப்பட்ட விசையை (nsec) உள்ளிடுங்கள்." },
+  paperBallotEntryInvalidNsec: { en: "That is not a valid ballot nsec. Check the printed key and try again.", fr: "Ce nsec de bulletin n'est pas valide. Vérifiez la clé imprimée et réessayez.", ta: "அது செல்லுபடியாகும் வாக்குச்சீட்டு nsec அல்ல. அச்சிடப்பட்ட விசையைச் சரிபார்த்து மீண்டும் முயற்சிக்கவும்." },
 } as const satisfies Record<string, LocalisedText>;
 
 export type UiStringKey = keyof typeof UI_STRINGS;
