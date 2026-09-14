@@ -3703,7 +3703,9 @@ export class QuestionnaireOptionAVoterRuntime {
         },
         tokenProofs: includeExistingCredentialBundle ? existingCredentialBundle.map((proof) => ({
           tokenCommitment: proof.tokenCommitment,
-          questionnaireId: this.state.electionId,
+          // INTEGRATION: this.state is narrowed by the guard above but
+          // TypeScript does not preserve that narrowing inside this closure.
+          questionnaireId: this.state!.electionId,
           signature: proof.credential,
           blindSigningKeyId: proof.blindSigningKeyId,
           questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
