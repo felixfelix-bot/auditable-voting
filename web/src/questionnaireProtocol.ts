@@ -1,10 +1,14 @@
 import {
   QUESTIONNAIRE_FLOW_MODE_LEGACY_PRIVATE_DM,
   QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
+  QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS,
   QUESTIONNAIRE_PROTOCOL_VERSION_V1,
+  QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+  QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED,
   QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN,
   QUESTIONNAIRE_RESPONSE_MODE_LEGACY_PRIVATE_ENVELOPE,
   type QuestionnaireFlowMode,
+  type QuestionnairePublicationMode,
   type QuestionnaireResponseMode,
 } from "./questionnaireProtocolConstants";
 import type { QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
@@ -152,6 +156,15 @@ export type QuestionnaireDefinition = {
   eligibilityMode: "open" | "allowlist";
   /** Leading zero SHA-256 bits required for general blind-ballot requests. */
   generalInvitePowDifficulty?: number;
+  /**
+   * How public blind-token submissions are published.
+   * - `immediate` (default): published as soon as the voter submits.
+   * - `windowed`: held locally and released once at `closeAt`, then accepted
+   *   until `closeAt + finalizationGraceSeconds`.
+   */
+  publicationMode?: QuestionnairePublicationMode;
+  /** Seconds after `closeAt` during which late windowed releases are still valid. */
+  finalizationGraceSeconds?: number;
   allowMultipleResponsesPerPubkey: boolean;
   ballotCredentialMode?: QuestionnaireBallotCredentialMode;
   credentialsPerVoter?: QuestionnaireCredentialsPerVoter;
@@ -377,8 +390,70 @@ export function questionnaireUsesPerQuestionCredentials(definition: Pick<Questio
   return definition?.ballotCredentialMode === "per_question";
 }
 
+/**
+ * True when public blind-token submissions for this questionnaire are held and
+ * released in a single slot at `closeAt` rather than published on submit.
+ */
+export function questionnaireIsWindowedPublication(
+  definition: Pick<QuestionnaireDefinition, "publicationMode"> | null | undefined,
+): boolean {
+  return definition?.publicationMode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED;
+}
+
+/** Unix seconds at which windowed submissions are released. */
+export function questionnaireReleaseAt(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt"> | null | undefined,
+): number | null {
+  if (!definition || !questionnaireIsWindowedPublication(definition)) {
+    return null;
+  }
+  return Number.isFinite(definition.closeAt) ? definition.closeAt : null;
+}
+
+/** Unix seconds after which a windowed release is no longer accepted. */
+export function questionnaireGraceUntil(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): number | null {
+  const releaseAt = questionnaireReleaseAt(definition);
+  if (releaseAt === null) {
+    return null;
+  }
+  const grace = definition?.finalizationGraceSeconds;
+  return releaseAt + (Number.isFinite(grace) && (grace as number) > 0 ? (grace as number) : 0);
+}
+
+/**
+ * Timestamp a public blind-token submission should carry. Windowed rounds use
+ * the shared release slot so the public record does not reveal per-voter
+ * submission time; immediate rounds use the supplied wall-clock time.
+ */
+export function questionnaireSubmissionTimestamp(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt"> | null | undefined,
+  nowSeconds: number,
+): number {
+  return questionnaireReleaseAt(definition) ?? nowSeconds;
+}
+
 export function questionnaireCredentialsPerVoter(definition: Pick<QuestionnaireDefinition, "credentialsPerVoter"> | null | undefined): QuestionnaireCredentialsPerVoter {
   return normaliseQuestionnaireCredentialsPerVoter(definition?.credentialsPerVoter);
+}
+
+/**
+ * True when a published result summary was signed before the windowed
+ * finalization grace elapsed, i.e. it may have missed late releases.
+ */
+export function questionnaireResultSummaryIsPremature(
+  summary: Pick<QuestionnaireResultSummary, "createdAt"> | null | undefined,
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): boolean {
+  if (!summary) {
+    return false;
+  }
+  const allowedAt = questionnaireGraceUntil(definition);
+  if (allowedAt === null) {
+    return false;
+  }
+  return Number.isFinite(summary.createdAt) && summary.createdAt < allowedAt;
 }
 
 export function normaliseQuestionnaireCredentialsPerVoter(value: unknown): QuestionnaireCredentialsPerVoter {
@@ -497,6 +572,25 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
       || input.generalInvitePowDifficulty > 24)
   ) {
     errors.push("general_invite_pow_difficulty_invalid");
+  }
+  if (
+    input.publicationMode !== undefined
+    && input.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE
+    && input.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED
+  ) {
+    errors.push("publication_mode_invalid");
+  }
+  if (input.publicationMode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    if (
+      input.finalizationGraceSeconds === undefined
+      || !Number.isInteger(input.finalizationGraceSeconds)
+      || input.finalizationGraceSeconds < 0
+      || input.finalizationGraceSeconds > QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS
+    ) {
+      errors.push("finalization_grace_seconds_invalid");
+    }
+  } else if (input.finalizationGraceSeconds !== undefined) {
+    errors.push("finalization_grace_seconds_unexpected");
   }
   if (
     input.responseMode !== QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN

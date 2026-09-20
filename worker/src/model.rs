@@ -573,6 +573,26 @@ pub fn now_iso() -> String {
     Utc::now().to_rfc3339()
 }
 
+pub fn unix_now() -> i64 {
+    Utc::now().timestamp()
+}
+
+/// For `publicationMode: "windowed"` definitions, the unix second after which
+/// final close/result publication may proceed so late releases are counted.
+/// Returns `None` for immediate/default definitions.
+pub fn windowed_grace_deadline(definition: &serde_json::Value) -> Option<i64> {
+    if definition.get("publicationMode").and_then(|value| value.as_str()) != Some("windowed") {
+        return None;
+    }
+    let close_at = definition.get("closeAt").and_then(|value| value.as_i64())?;
+    let grace = definition
+        .get("finalizationGraceSeconds")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0)
+        .max(0);
+    Some(close_at + grace)
+}
+
 pub fn is_expired(iso_time: &str) -> bool {
     match DateTime::parse_from_rfc3339(iso_time) {
         Ok(parsed) => parsed.with_timezone(&Utc) <= Utc::now(),
@@ -583,6 +603,37 @@ pub fn is_expired(iso_time: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windowed_grace_deadline_only_applies_to_windowed_definitions() {
+        let windowed = serde_json::json!({
+            "publicationMode": "windowed",
+            "closeAt": 1_000,
+            "finalizationGraceSeconds": 3_600,
+        });
+        assert_eq!(windowed_grace_deadline(&windowed), Some(4_600));
+
+        let immediate = serde_json::json!({
+            "closeAt": 1_000,
+        });
+        assert_eq!(windowed_grace_deadline(&immediate), None);
+
+        let windowed_no_grace = serde_json::json!({
+            "publicationMode": "windowed",
+            "closeAt": 2_000,
+        });
+        assert_eq!(windowed_grace_deadline(&windowed_no_grace), Some(2_000));
+
+        let negative = serde_json::json!({
+            "publicationMode": "windowed",
+            "closeAt": 2_000,
+            "finalizationGraceSeconds": -10,
+        });
+        assert_eq!(windowed_grace_deadline(&negative), Some(2_000));
+
+        let missing_close = serde_json::json!({ "publicationMode": "windowed" });
+        assert_eq!(windowed_grace_deadline(&missing_close), None);
+    }
 
     #[test]
     fn persistent_state_loads_legacy_runtime_state_without_new_fields() {

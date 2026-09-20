@@ -10,6 +10,8 @@ import {
   normaliseRankedOptionIds,
   validateQuestionnaireDefinition,
   questionnaireCredentialsPerVoter,
+  questionnaireGraceUntil,
+  questionnaireResultSummaryIsPremature,
   type QuestionnaireDefinition,
   type QuestionnairePublishedResponseRef,
   type QuestionnaireQuestion,
@@ -23,6 +25,7 @@ import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type 
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import {
   QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
+  QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS,
   QUESTIONNAIRE_PROTOCOL_VERSION_V2,
 } from "./questionnaireProtocolConstants";
 import SimpleCollapsibleSection from "./SimpleCollapsibleSection";
@@ -580,6 +583,8 @@ type StoredQuestionnaireDraft = {
   generatedWorkerCoordinatorNpub?: string;
   generalInvitePowEnabled?: boolean;
   generalInvitePowDifficulty?: string;
+  windowedPublicationEnabled?: boolean;
+  finalizationGraceHours?: string;
 };
 
 const DEFAULT_WORKER_CONTROL_RELAYS = normalizeRelaysRust([
@@ -817,6 +822,8 @@ function readStoredQuestionnaireDraft(): StoredQuestionnaireDraft {
       ),
       generalInvitePowEnabled: parsed.generalInvitePowEnabled === true,
       generalInvitePowDifficulty: typeof parsed.generalInvitePowDifficulty === "string" ? parsed.generalInvitePowDifficulty : "8",
+      windowedPublicationEnabled: parsed.windowedPublicationEnabled === true,
+      finalizationGraceHours: typeof parsed.finalizationGraceHours === "string" ? parsed.finalizationGraceHours : "24",
     };
   } catch {
     return {
@@ -1464,6 +1471,8 @@ function buildDefinition(input: {
   questions: QuestionnaireQuestionDraft[];
   blindSigningPublicKey?: QuestionnaireBlindPublicKey | null;
   generalInvitePowDifficulty?: number;
+  publicationMode?: "immediate" | "windowed";
+  finalizationGraceSeconds?: number;
 }): QuestionnaireDefinition {
   const createdAt = nowUnix();
   const closeAfterMinutes = Number.isFinite(input.closeAfterMinutes)
@@ -1486,6 +1495,12 @@ function buildDefinition(input: {
     responseVisibility: "private",
     eligibilityMode: "open",
     ...(input.generalInvitePowDifficulty ? { generalInvitePowDifficulty: input.generalInvitePowDifficulty } : {}),
+    ...(input.publicationMode === "windowed"
+      ? {
+          publicationMode: "windowed" as const,
+          finalizationGraceSeconds: Math.max(0, Math.floor(input.finalizationGraceSeconds ?? 0)),
+        }
+      : {}),
     allowMultipleResponsesPerPubkey: false,
     ballotCredentialMode: "questionnaire",
     blindSigningPublicKey: input.blindSigningPublicKey ?? null,
@@ -1537,6 +1552,8 @@ function comparableDefinitionDraftShape(definition: QuestionnaireDefinition) {
     ballotCredentialMode: definition.ballotCredentialMode ?? "questionnaire",
     credentialsPerVoter: questionnaireCredentialsPerVoter(definition),
     generalInvitePowDifficulty: definition.generalInvitePowDifficulty ?? 0,
+    publicationMode: definition.publicationMode ?? "immediate",
+    finalizationGraceSeconds: definition.finalizationGraceSeconds ?? 0,
     blindSigningPublicKey: definition.blindSigningPublicKey ?? null,
     closeDurationSeconds: definitionCloseDurationSeconds(definition),
     questionnaireRelays: comparableDefinitionRelaySet(definition),
@@ -1598,6 +1615,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
   const [newVoterGroupLabel, setNewVoterGroupLabel] = useState("");
   const [generalInvitePowEnabled, setGeneralInvitePowEnabled] = useState(storedDraft.generalInvitePowEnabled ?? false);
   const [generalInvitePowDifficulty, setGeneralInvitePowDifficulty] = useState(storedDraft.generalInvitePowDifficulty ?? "8");
+  const [windowedPublicationEnabled, setWindowedPublicationEnabled] = useState(storedDraft.windowedPublicationEnabled ?? false);
+  const [finalizationGraceHours, setFinalizationGraceHours] = useState(storedDraft.finalizationGraceHours ?? "24");
   const generalInvitePowSliderValue = Math.min(
     GENERAL_INVITE_POW_MAX_DIFFICULTY,
     Math.max(0, Number.parseInt(generalInvitePowDifficulty, 10) || 0),
@@ -2156,7 +2175,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     const resultSummary = [...resultEvents]
       .sort((left, right) => right.created_at - left.created_at)
       .map((event) => parseQuestionnaireResultSummaryEvent(event))
-      .find((summary) => Boolean(summary))
+      .find((summary) => Boolean(summary) && !questionnaireResultSummaryIsPremature(summary, definition))
       ?? null;
     const publicResponseEntries = (input.publicResponseEntries ?? [])
       .filter((entry) => entry.response.questionnaireId === activeQuestionnaireId);
@@ -2969,6 +2988,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       generatedWorkerCoordinatorNpub,
       generalInvitePowEnabled,
       generalInvitePowDifficulty,
+      windowedPublicationEnabled,
+      finalizationGraceHours,
       questionnaireRelays: questionnaireRelaysInput,
     };
     window.localStorage.setItem(
@@ -2991,6 +3012,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     generatedWorkerCoordinatorNpub,
     generalInvitePowDifficulty,
     generalInvitePowEnabled,
+    windowedPublicationEnabled,
+    finalizationGraceHours,
     questionnaireRelaysInput,
     questionnaireId,
     questions,
@@ -3021,6 +3044,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     setVoterGroups(normaliseStoredVoterGroups(activePublishedDefinition.voterGroups));
     setGeneralInvitePowEnabled((activePublishedDefinition.generalInvitePowDifficulty ?? 0) > 0);
     setGeneralInvitePowDifficulty(String(activePublishedDefinition.generalInvitePowDifficulty ?? 8));
+    setWindowedPublicationEnabled(activePublishedDefinition.publicationMode === "windowed");
+    setFinalizationGraceHours(String(Math.round((activePublishedDefinition.finalizationGraceSeconds ?? 86_400) / 3600)));
     setQuestions(normaliseStoredQuestions(activePublishedDefinition.questions));
     const relayInput = formatQuestionnaireRelayInputFromDefinition(activePublishedDefinition);
     props.onQuestionnaireRelaysInputChange?.(relayInput);
@@ -3211,6 +3236,13 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     if (generalInvitePowEnabled && (!Number.isInteger(powDifficulty) || powDifficulty < 0 || powDifficulty > 24)) {
       return null;
     }
+    const graceHours = Number.parseFloat(finalizationGraceHours);
+    if (
+      windowedPublicationEnabled
+      && (!Number.isFinite(graceHours) || graceHours < 0 || graceHours * 3600 > QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS)
+    ) {
+      return null;
+    }
     return buildDefinition({
       questionnaireId: questionnaireId.trim(),
       coordinatorPubkey: coordinatorNpub,
@@ -3222,8 +3254,10 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
       questions,
       blindSigningPublicKey: effectiveBlindSigningPublicKey ?? null,
       generalInvitePowDifficulty: generalInvitePowEnabled ? powDifficulty : 0,
+      publicationMode: windowedPublicationEnabled ? "windowed" : "immediate",
+      finalizationGraceSeconds: windowedPublicationEnabled ? Math.floor(graceHours * 3600) : undefined,
     });
-  }, [closeAfterMinutes, closeTimerEnabled, closeTimerUnit, coordinatorNpub, description, effectiveBlindSigningPublicKey, generalInvitePowDifficulty, generalInvitePowEnabled, questionnaireId, questionnaireRelayMetadata, questions, title, voterGroups]);
+  }, [closeAfterMinutes, closeTimerEnabled, closeTimerUnit, coordinatorNpub, description, effectiveBlindSigningPublicKey, finalizationGraceHours, generalInvitePowDifficulty, generalInvitePowEnabled, questionnaireId, questionnaireRelayMetadata, questions, title, voterGroups, windowedPublicationEnabled]);
 
   const selectedWorkerStatus = useMemo(() => {
     const workerNpub = normaliseWorkerNpub(delegatedWorkerNpub);
@@ -4114,6 +4148,14 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     const definition = activePublishedDefinition;
     if (!definition || !coordinatorNsec.trim() || !coordinatorNpub.trim()) {
       setStatus("Load the vote before publishing results.");
+      return;
+    }
+
+    const resultsAllowedAt = questionnaireGraceUntil(definition);
+    if (resultsAllowedAt !== null && nowUnix() < resultsAllowedAt) {
+      setStatus(
+        `Final results are held until the finalization grace ends at ${new Date(resultsAllowedAt * 1000).toLocaleString()} so late windowed releases can still be counted.`,
+      );
       return;
     }
 
@@ -5368,6 +5410,28 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             <span>Off</span><span>Instant</span><span>~1 sec</span><span>~10 sec</span><span>~1 min</span>
           </div>
         </div>
+        <UiSwitch
+          className={`simple-questionnaire-close-timer-toggle${windowedPublicationEnabled ? " is-on" : ""}`}
+          label='Windowed publication (hold ballots until close)'
+          isSelected={windowedPublicationEnabled}
+          onChange={setWindowedPublicationEnabled}
+        />
+        {windowedPublicationEnabled ? (
+          <div className='simple-voter-field-stack simple-voter-field-stack-tight'>
+            <label className='simple-voter-label' htmlFor='finalization-grace-hours'>Finalization grace after close (hours)</label>
+            <input
+              id='finalization-grace-hours'
+              className='simple-voter-input'
+              type='number'
+              min={0}
+              max={QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS / 3600}
+              step={1}
+              value={finalizationGraceHours}
+              onChange={(event) => setFinalizationGraceHours(event.target.value)}
+            />
+            <p className='simple-voter-note'>Ballots are held locally and released together at close, then accepted for this long so late releases still count. Provisional live charts are disabled for the round.</p>
+          </div>
+        ) : null}
         </section>
       </section>
       </section>

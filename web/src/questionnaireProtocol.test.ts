@@ -6,6 +6,11 @@ import {
   normaliseQuestionBallotSlot,
   normalizeQuestionnaireDefinition,
   questionBallotScopeKey,
+  questionnaireGraceUntil,
+  questionnaireIsWindowedPublication,
+  questionnaireReleaseAt,
+  questionnaireResultSummaryIsPremature,
+  questionnaireSubmissionTimestamp,
   validateQuestionnaireDefinition,
   validateQuestionnaireResponsePayload,
   type QuestionnaireDefinition,
@@ -73,6 +78,80 @@ describe("questionnaireProtocol", () => {
       .toContain("general_invite_pow_difficulty_invalid");
     expect(validateQuestionnaireDefinition({ ...buildDefinition(), generalInvitePowDifficulty: 1.5 } as QuestionnaireDefinition).errors)
       .toContain("general_invite_pow_difficulty_invalid");
+  });
+
+  it("requires a bounded finalization grace only for windowed publication", () => {
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 86_400,
+    }).valid).toBe(true);
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_000_000,
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 1.5,
+    } as QuestionnaireDefinition).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "immediate",
+      finalizationGraceSeconds: 60,
+    }).errors).toContain("finalization_grace_seconds_unexpected");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "bogus",
+    } as QuestionnaireDefinition).errors).toContain("publication_mode_invalid");
+  });
+
+  it("derives windowed release, grace, and normalized submission timestamps", () => {
+    const immediate = buildDefinition();
+    expect(questionnaireIsWindowedPublication(immediate)).toBe(false);
+    expect(questionnaireReleaseAt(immediate)).toBeNull();
+    expect(questionnaireGraceUntil(immediate)).toBeNull();
+    expect(questionnaireSubmissionTimestamp(immediate, 1_700_000_000)).toBe(1_700_000_000);
+
+    const windowed: QuestionnaireDefinition = {
+      ...immediate,
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    expect(questionnaireIsWindowedPublication(windowed)).toBe(true);
+    expect(questionnaireReleaseAt(windowed)).toBe(windowed.closeAt);
+    expect(questionnaireGraceUntil(windowed)).toBe(windowed.closeAt + 3_600);
+    expect(questionnaireSubmissionTimestamp(windowed, 1_700_000_000)).toBe(windowed.closeAt);
+
+    const windowedNoGrace: QuestionnaireDefinition = {
+      ...immediate,
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 0,
+    };
+    expect(questionnaireGraceUntil(windowedNoGrace)).toBe(windowedNoGrace.closeAt);
+  });
+
+  it("flags a result summary published before the windowed grace elapses", () => {
+    const windowed: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    const summary = { createdAt: windowed.closeAt + 10 };
+    expect(questionnaireResultSummaryIsPremature(summary, windowed)).toBe(true);
+    expect(questionnaireResultSummaryIsPremature({ createdAt: windowed.closeAt + 3_600 }, windowed)).toBe(false);
+    expect(questionnaireResultSummaryIsPremature({ createdAt: windowed.closeAt + 10 }, buildDefinition())).toBe(false);
+    expect(questionnaireResultSummaryIsPremature(null, windowed)).toBe(false);
   });
 
   it("supports questionnaire-defined voter groups while preserving legacy aliases", () => {

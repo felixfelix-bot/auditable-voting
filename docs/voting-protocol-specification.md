@@ -62,6 +62,8 @@ Proxy voters may receive two independently blinded credentials. Each credential 
 
 The voter submits a public blind-token response from a fresh response identity. The response contains answers or an encrypted answer payload, the token commitment and blind signature proof, and a nullifier derived from the token secret and ballot scope. The outer Nostr event must have a valid signature from that same response identity; the payload `authorPubkey` is not trusted by itself.
 
+A questionnaire definition may set `publicationMode: "windowed"` with a `finalizationGraceSeconds` value. In that mode the client holds the bound ballot locally instead of publishing on submit, releases all held ballots in a single slot at `closeAt`, stamps `created_at` and the payload `submittedAt` with the shared release time, and suppresses provisional per-question events. Late releases remain valid until `closeAt + finalizationGraceSeconds`; coordinator and delegated proxy hold close and the final summary until then. Default `immediate` mode is unchanged.
+
 The verifier checks:
 
 1. the questionnaire definition and submission shape;
@@ -93,7 +95,7 @@ It does not solve:
 
 - coercion, vote selling, or a voter voluntarily sharing their credential;
 - compromise of the voter device, browser, or local browser state;
-- traffic analysis from Nostr identity use, timing, relay selection, or network metadata;
+- traffic analysis from Nostr identity use, timing, relay selection, or network metadata (windowed publication reduces application-layer timing correlation but not network-layer metadata);
 - dishonest eligibility decisions by the organiser; or
 - availability failures of relays, browsers, or an optional audit proxy.
 

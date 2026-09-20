@@ -485,6 +485,7 @@ export function saveVoterState(input: {
   writeJson(keys.submission, {
     submission: input.state.submission,
     submissions: input.state.submissions ?? {},
+    pendingPublicReleases: input.state.pendingPublicReleases ?? {},
     responseNsec: input.state.responseNsec ?? null,
     responseNpub: input.state.responseNpub ?? null,
   });
@@ -553,6 +554,7 @@ export function loadVoterState(input: {
   const submissionPart = readJson<{
     submission?: BallotSubmission | null;
     submissions?: Record<string, BallotSubmission>;
+    pendingPublicReleases?: VoterElectionLocalState["pendingPublicReleases"];
     responseNsec?: string | null;
     responseNpub?: string | null;
   } | BallotSubmission | null>(keys.submission, null);
@@ -561,6 +563,9 @@ export function loadVoterState(input: {
     : (submissionPart?.submission ?? null);
   const submissions = submissionPart && !("type" in submissionPart)
     ? submissionPart.submissions ?? {}
+    : {};
+  const pendingPublicReleases = submissionPart && !("type" in submissionPart)
+    ? submissionPart.pendingPublicReleases ?? {}
     : {};
   const acceptance = readJson<{
     submissionAccepted?: boolean | null;
@@ -584,6 +589,7 @@ export function loadVoterState(input: {
     || Object.keys(blindIssuances).length > 0
     || submission
     || Object.keys(submissions).length > 0
+    || Object.keys(pendingPublicReleases).length > 0
     || draftResponses.length > 0
   );
   if (!anyState && !summary) {
@@ -616,6 +622,7 @@ export function loadVoterState(input: {
     draftResponses,
     submission,
     submissions,
+    pendingPublicReleases,
     submissionAccepted: acceptance.submissionAccepted ?? null,
     submissionAcceptedAt: acceptance.submissionAcceptedAt ?? null,
     submissionDecisions: acceptance.submissionDecisions ?? {},

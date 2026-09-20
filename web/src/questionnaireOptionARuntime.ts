@@ -23,6 +23,7 @@ import {
   type ElectionSummary,
   type ElectionState,
   type Npub,
+  type PendingPublicRelease,
   type QuestionnaireBlindPublicKey,
   type QuestionnaireAnswer,
   type VoterElectionLocalState,
@@ -161,6 +162,10 @@ import {
   normaliseQuestionnairePrivateInviteMaxRedemptions,
   questionBallotCredentialScope,
   questionnaireCredentialsPerVoter,
+  questionnaireGraceUntil,
+  questionnaireIsWindowedPublication,
+  questionnaireReleaseAt,
+  questionnaireSubmissionTimestamp,
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireCredentialsPerVoter,
   type QuestionnaireDefinition,
@@ -831,6 +836,21 @@ function submissionCredentialBundle(submission: BallotSubmission): BallotCredent
     nullifier: submission.nullifier,
     ballotScope: null,
   }];
+}
+
+function findStoredSubmission(
+  state: VoterElectionLocalState,
+  submissionId: string,
+): BallotSubmission | null {
+  if (state.submission?.submissionId === submissionId) {
+    return state.submission;
+  }
+  for (const submission of Object.values(state.submissions ?? {})) {
+    if (submission?.submissionId === submissionId) {
+      return submission;
+    }
+  }
+  return null;
 }
 
 function ballotCredentialProofQuestionId(proof: BallotCredentialProof) {
@@ -2311,6 +2331,11 @@ export class QuestionnaireOptionAVoterRuntime {
     }
     const credentialIndex = Math.max(1, Math.floor(options?.credentialIndex ?? 1));
     const definition = readCachedQuestionnaireDefinition(this.state.electionId);
+    if (questionnaireIsWindowedPublication(definition)) {
+      // Windowed rounds suppress live per-question hints: they are signed by the
+      // same key as the final ballot and would reintroduce timing correlation.
+      return null;
+    }
     let responseSecretKey: Uint8Array;
     try {
       responseSecretKey = await deriveDeterministicResponseSecretKey({
@@ -3393,6 +3418,56 @@ export class QuestionnaireOptionAVoterRuntime {
     return this.state;
   }
 
+  private async publishStoredSubmissionPublic(
+    submission: BallotSubmission,
+    responseNsec: string,
+    options?: { eventCreatedAt?: number; submittedAt?: number },
+  ) {
+    if (!this.state) {
+      throw new OptionARuntimeError("not_logged_in", "Login is required.");
+    }
+    const credentialBundle = submissionCredentialBundle(submission);
+    const includeCredentialBundle = Array.isArray(submission.credentialBundle)
+      && submission.credentialBundle.length > 0;
+    const submittedAt = options?.submittedAt
+      ?? (Number.isFinite(Date.parse(submission.submittedAt))
+        ? Math.floor(Date.parse(submission.submittedAt) / 1000)
+        : Math.floor(Date.now() / 1000));
+    return publishQuestionnaireBlindResponsePublic({
+      responseNsec,
+      questionnaireId: this.state.electionId,
+      responseId: submission.submissionId,
+      submittedAt,
+      eventCreatedAt: options?.eventCreatedAt,
+      tokenNullifier: submission.nullifier,
+      tokenNullifiers: includeCredentialBundle ? credentialBundle.map((proof) => ({
+        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
+        tokenNullifier: proof.nullifier,
+        ballotScope: proof.ballotScope ?? null,
+      })) : undefined,
+      tokenProof: {
+        tokenCommitment: submission.tokenCommitment,
+        questionnaireId: this.state.electionId,
+        signature: submission.credential,
+        blindSigningKeyId: submission.blindSigningKeyId,
+        ballotScope: credentialBundle[0]?.ballotScope ?? null,
+      },
+      tokenProofs: includeCredentialBundle ? credentialBundle.map((proof) => ({
+        tokenCommitment: proof.tokenCommitment,
+        questionnaireId: submission.electionId,
+        signature: proof.credential,
+        blindSigningKeyId: proof.blindSigningKeyId,
+        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
+        ballotScope: proof.ballotScope ?? null,
+      })) : undefined,
+      answers: toQuestionnaireResponseAnswers(submission.payload.responses, {
+        coordinatorNpub: this.state.coordinatorNpub,
+        responseSecretKey: decodeNsecSecretKey(responseNsec),
+      }),
+      relays: this.getPreferredDmRelays(),
+    });
+  }
+
   async submitVote(requiredQuestionIds: string[], options?: SubmitVoteOptions) {
     if (this.submitVoteInflight) {
       optionAFlowLog("voter", "submit_vote_inflight_reused", { electionId: this.electionId });
@@ -3696,7 +3771,7 @@ export class QuestionnaireOptionAVoterRuntime {
         },
         tokenProofs: includeExistingCredentialBundle ? existingCredentialBundle.map((proof) => ({
           tokenCommitment: proof.tokenCommitment,
-          questionnaireId: this.state.electionId,
+          questionnaireId: this.electionId,
           signature: proof.credential,
           blindSigningKeyId: proof.blindSigningKeyId,
           questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
@@ -3788,40 +3863,37 @@ export class QuestionnaireOptionAVoterRuntime {
     this.startVoterDmSubscriptions();
     saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
     void this.publishVoterStateSelfDm({ reason: "submit_vote_created", force: true });
-    const published = await publishQuestionnaireBlindResponsePublic({
-      responseNsec,
-      questionnaireId: this.state.electionId,
-      responseId: submission.submissionId,
-      submittedAt: Number.isFinite(Date.parse(submission.submittedAt))
-        ? Math.floor(Date.parse(submission.submittedAt) / 1000)
-        : Math.floor(Date.now() / 1000),
-      tokenNullifier: submission.nullifier,
-      tokenNullifiers: includeCredentialBundle ? credentialBundle.map((proof) => ({
-        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
-        tokenNullifier: proof.nullifier,
-        ballotScope: proof.ballotScope ?? null,
-      })) : undefined,
-      tokenProof: {
-        tokenCommitment: submission.tokenCommitment,
-        questionnaireId: this.state.electionId,
-        signature: submission.credential,
-        blindSigningKeyId: submission.blindSigningKeyId,
-        ballotScope: primaryCredential.ballotScope ?? null,
-      },
-        tokenProofs: includeCredentialBundle ? credentialBundle.map((proof) => ({
-          tokenCommitment: proof.tokenCommitment,
-          questionnaireId: submission.electionId,
-          signature: proof.credential,
-          blindSigningKeyId: proof.blindSigningKeyId,
-          questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
-          ballotScope: proof.ballotScope ?? null,
-      })) : undefined,
-      answers: toQuestionnaireResponseAnswers(submission.payload.responses, {
-        coordinatorNpub: this.state.coordinatorNpub,
-        responseSecretKey,
-      }),
-      relays: this.getPreferredDmRelays(),
-    });
+    const windowedReleaseAt = questionnaireReleaseAt(definition);
+    const windowedGraceUntil = questionnaireGraceUntil(definition);
+    if (windowedReleaseAt !== null && windowedGraceUntil !== null) {
+      const releaseRecord: PendingPublicRelease = {
+        submissionId: submission.submissionId,
+        submissionKey: targetSubmissionKeys[0] ?? null,
+        responseNsec,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+        releasedAt: null,
+        releasedEventId: null,
+      };
+      this.state = {
+        ...this.state,
+        pendingPublicReleases: {
+          ...(this.state.pendingPublicReleases ?? {}),
+          [submission.submissionId]: releaseRecord,
+        },
+      };
+      saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+      await this.publishBallotSubmissionSelfCopyDm(submission, { fallbackNsec: responseNsec });
+      void this.publishVoterStateSelfDm({ reason: "submit_vote_queued_windowed", force: true });
+      optionAFlowLog("voter", "submit_vote_queued_for_windowed_release", {
+        electionId: this.state.electionId,
+        submissionId: submission.submissionId,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+      });
+      return this.getSnapshot() ?? this.state;
+    }
+    const published = await this.publishStoredSubmissionPublic(submission, responseNsec);
     optionAFlowLog("voter", "submit_vote_public_publish_result", {
       electionId: this.state.electionId,
       submissionId: submission.submissionId,
@@ -3839,6 +3911,108 @@ export class QuestionnaireOptionAVoterRuntime {
       responseNpub,
     });
     return this.state;
+  }
+
+  /**
+   * Releases windowed submissions whose release slot has arrived. Idempotent and
+   * safe to call from focus/visibility handlers and timers: already-released
+   * entries are skipped, and entries past their grace window are dropped.
+   */
+  async releasePendingPublicSubmissions(): Promise<number> {
+    if (!this.state) {
+      return 0;
+    }
+    const pending = this.state.pendingPublicReleases ?? {};
+    const entries = Object.values(pending);
+    if (entries.length === 0) {
+      return 0;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    let releasedCount = 0;
+    let nextState = this.state;
+    let changed = false;
+
+    for (const entry of entries) {
+      if (entry.releasedAt) {
+        continue;
+      }
+      const submission = findStoredSubmission(nextState, entry.submissionId);
+      if (!submission) {
+        // The submission record is gone; drop the orphaned release entry.
+        const rest = { ...(nextState.pendingPublicReleases ?? {}) };
+        delete rest[entry.submissionId];
+        nextState = { ...nextState, pendingPublicReleases: rest };
+        changed = true;
+        continue;
+      }
+      if (nowSeconds < entry.releaseAt) {
+        continue;
+      }
+      if (nowSeconds >= entry.graceUntil) {
+        const rest = { ...(nextState.pendingPublicReleases ?? {}) };
+        delete rest[entry.submissionId];
+        nextState = { ...nextState, pendingPublicReleases: rest };
+        changed = true;
+        optionAFlowLog("voter", "windowed_release_missed_grace", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          graceUntil: entry.graceUntil,
+        });
+        continue;
+      }
+      try {
+        const published = await this.publishStoredSubmissionPublic(submission, entry.responseNsec, {
+          eventCreatedAt: entry.releaseAt,
+          submittedAt: entry.releaseAt,
+        });
+        if (!published || published.successes <= 0) {
+          optionAFlowLog("voter", "windowed_release_publish_failed", {
+            electionId: nextState.electionId,
+            submissionId: entry.submissionId,
+          });
+          continue;
+        }
+        nextState = {
+          ...nextState,
+          pendingPublicReleases: {
+            ...(nextState.pendingPublicReleases ?? {}),
+            [entry.submissionId]: {
+              ...entry,
+              releasedAt: new Date().toISOString(),
+              releasedEventId: published.eventId,
+            },
+          },
+        };
+        changed = true;
+        releasedCount += 1;
+        optionAFlowLog("voter", "windowed_release_published", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          eventId: published.eventId,
+          releaseAt: entry.releaseAt,
+        });
+      } catch (error) {
+        optionAFlowLog("voter", "windowed_release_publish_threw", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          error: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
+
+    if (!changed) {
+      return releasedCount;
+    }
+    this.state = nextState;
+    saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+    void this.publishVoterStateSelfDm({ reason: "windowed_release", force: true });
+    this.notifyStateChanged();
+    optionAFlowLog("voter", "windowed_release_completed", {
+      electionId: this.state.electionId,
+      releasedCount,
+      remaining: Object.keys(this.state.pendingPublicReleases ?? {}).length,
+    });
+    return releasedCount;
   }
 
   async publishBallotSubmissionDm(

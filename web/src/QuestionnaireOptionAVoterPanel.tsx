@@ -34,6 +34,8 @@ import {
   questionBallotCredentialScope,
   questionBallotScopeKey,
   questionnaireCredentialsPerVoter,
+  questionnaireIsWindowedPublication,
+  questionnaireReleaseAt,
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireDefinition,
 } from "./questionnaireProtocol";
@@ -1665,6 +1667,9 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       } catch {
         // Keep lifecycle refresh best-effort; explicit actions surface errors.
       }
+      if (runtime) {
+        void runtime.releasePendingPublicSubmissions().catch(() => undefined);
+      }
     };
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
@@ -1680,6 +1685,18 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [runtime, props.localVoterNsec, snapshot?.loginVerified, snapshot?.blindRequestSent, snapshot?.credentialReady, snapshot?.submission, snapshot?.submissionAccepted]);
+
+  useEffect(() => {
+    if (!runtime) {
+      return;
+    }
+    const tick = () => {
+      void runtime.releasePendingPublicSubmissions().catch(() => undefined);
+    };
+    tick();
+    const intervalId = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [runtime]);
 
   useEffect(() => {
     if (!runtime || !snapshot?.loginVerified || !snapshot.blindRequestSent || snapshot.credentialReady || snapshot.submission) {
@@ -2937,6 +2954,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           ? questions.map((question) => question.questionId)
           : [];
       const submitQuestionIdSet = new Set(submitQuestionIds);
+      const windowedReleaseAt = questionnaireReleaseAt(questionnaireDefinition);
+      const windowedQueuedMessage = questionnaireIsWindowedPublication(questionnaireDefinition) && windowedReleaseAt !== null
+        ? `Answers locked. Your ballot is queued and will be published in the release window at ${new Date(windowedReleaseAt * 1000).toLocaleString()}.`
+        : null;
       const submitRequiredQuestionSourceIds = options?.submitAllQuestions
         ? requiredQuestionIdsForQuestionnaire
         : requiredQuestionIds;
@@ -2964,7 +2985,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           setActiveQuestionIndex(nextQuestionIndex);
           setStatus(null);
         } else {
-          setStatus("All question responses submitted.");
+          setStatus(windowedQueuedMessage ?? "All question responses submitted.");
         }
         setRefreshNonce((value) => value + 1);
         return;
@@ -2987,10 +3008,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           setActiveQuestionIndex(nextQuestionIndex);
           setStatus(null);
         } else {
-          setStatus("All question responses submitted.");
+          setStatus(windowedQueuedMessage ?? "All question responses submitted.");
         }
       } else {
-        setStatus(null);
+        setStatus(windowedQueuedMessage);
       }
       setRefreshNonce((value) => value + 1);
     } catch (error) {
