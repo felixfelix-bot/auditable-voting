@@ -687,7 +687,7 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
     if (
       input.finalizationGraceSeconds === undefined
       || !Number.isInteger(input.finalizationGraceSeconds)
-      || input.finalizationGraceSeconds < 0
+      || input.finalizationGraceSeconds <= 0
       || input.finalizationGraceSeconds > QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS
     ) {
       errors.push("finalization_grace_seconds_invalid");

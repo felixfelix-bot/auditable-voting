@@ -3062,6 +3062,47 @@ describe("questionnaireOptionARuntime", () => {
     expect(rebuilt?.responseNsec).toBe(originalNsec);
   });
 
+  it("fails closed when a windowed policy carries no positive grace (A3)", async () => {
+    const windowedId = `${electionId}_a3_no_grace`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    // A windowed round with no positive grace: the definition cache is gone and
+    // the persisted policy records a null grace (the malformed fail-closed form).
+    evictQuestionnaireDefinitionCache();
+    saveVoterState({
+      voterNpub,
+      state: {
+        ...stored!,
+        publicationPolicy: {
+          publicationMode: "windowed",
+          finalizationGraceSeconds: null,
+          closeAt: definition.closeAt,
+        },
+      },
+    });
+
+    const resumed = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await resumed.loginWithSigner(null);
+    await expect(resumed.submitVote(["q1"])).rejects.toMatchObject({ code: "invalid_publication_mode" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
   it("fails closed instead of publishing immediately when the publication mode is unknown (A6)", async () => {
     const windowedId = `${electionId}_a6_unknown`;
     setUpWindowedElection(windowedId);

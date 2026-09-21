@@ -8,6 +8,8 @@ import {
   questionBallotScopeKey,
   questionnaireGraceUntil,
   questionnaireIsWindowedPublication,
+  questionnairePublicationPolicyFromDefinition,
+  questionnairePublicationPolicyGraceUntil,
   questionnaireReleaseAt,
   questionnaireResultSummaryIsPremature,
   questionnaireSubmissionTimestamp,
@@ -95,6 +97,12 @@ describe("questionnaireProtocol", () => {
     expect(validateQuestionnaireDefinition({
       ...buildDefinition(),
       publicationMode: "windowed",
+      finalizationGraceSeconds: 0,
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
       finalizationGraceSeconds: 3_000_000,
     }).errors).toContain("finalization_grace_seconds_invalid");
 
@@ -138,7 +146,15 @@ describe("questionnaireProtocol", () => {
       publicationMode: "windowed",
       finalizationGraceSeconds: 0,
     };
+    // A3: questionnaireGraceUntil keeps degrading a zero grace to the release
+    // slot. Nulling it here would make the submit-time window check false and
+    // publish immediately with the real submission time (the exact leak); the
+    // runtime instead raises an explicit invalid-mode error, and the *policy*
+    // helper below is the fail-closed twin.
     expect(questionnaireGraceUntil(windowedNoGrace)).toBe(windowedNoGrace.closeAt);
+    expect(questionnairePublicationPolicyGraceUntil(
+      questionnairePublicationPolicyFromDefinition(windowedNoGrace),
+    )).toBeNull();
   });
 
   it("flags a result summary published before the windowed grace elapses", () => {
