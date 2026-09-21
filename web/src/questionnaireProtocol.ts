@@ -348,6 +348,12 @@ export type QuestionnaireResultSummary = {
   eventType: "questionnaire_result_summary";
   questionnaireId: string;
   createdAt: number;
+  /**
+   * Signed event timestamp (event.created_at), set by the parser on read so the
+   * premature guard can rely on a non-forgeable clock. Deliberately NOT a
+   * serialised field of the published content.
+   */
+  eventCreatedAt?: number;
   coordinatorPubkey: string;
   acceptedResponseCount: number;
   rejectedResponseCount: number;
@@ -546,7 +552,7 @@ export function questionnaireCredentialsPerVoter(definition: Pick<QuestionnaireD
  * finalization grace elapsed, i.e. it may have missed late releases.
  */
 export function questionnaireResultSummaryIsPremature(
-  summary: Pick<QuestionnaireResultSummary, "createdAt"> | null | undefined,
+  summary: Pick<QuestionnaireResultSummary, "createdAt" | "eventCreatedAt"> | null | undefined,
   definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
 ): boolean {
   if (!summary) {
@@ -556,7 +562,20 @@ export function questionnaireResultSummaryIsPremature(
   if (allowedAt === null) {
     return false;
   }
-  return Number.isFinite(summary.createdAt) && summary.createdAt < allowedAt;
+  // A4: trust the SIGNED event timestamp when present, and fail closed by using
+  // min(signed, content). max() would let a forged future createdAt in the
+  // content win and prematurely surface a summary as final; min keeps the
+  // earliest honest clock, so a forged future value cannot fail open.
+  const contentAt = typeof summary.createdAt === "number" && Number.isFinite(summary.createdAt)
+    ? summary.createdAt
+    : null;
+  const signedAt = typeof summary.eventCreatedAt === "number" && Number.isFinite(summary.eventCreatedAt)
+    ? summary.eventCreatedAt
+    : null;
+  const earliest = signedAt !== null && contentAt !== null
+    ? Math.min(signedAt, contentAt)
+    : (signedAt ?? contentAt);
+  return earliest !== null && earliest < allowedAt;
 }
 
 export function normaliseQuestionnaireCredentialsPerVoter(value: unknown): QuestionnaireCredentialsPerVoter {

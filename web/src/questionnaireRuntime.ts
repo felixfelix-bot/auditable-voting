@@ -141,7 +141,12 @@ export function parseQuestionnaireResultSummaryEvent(event: NostrEvent): Questio
     ) {
       return null;
     }
-    return parsed;
+    return {
+      ...parsed,
+      // A4: carry the signed event timestamp onto the parsed summary so the
+      // premature guard can trust a non-forgeable clock. Never serialised.
+      eventCreatedAt: Number.isFinite(event.created_at) ? Math.floor(event.created_at) : parsed.createdAt,
+    };
   } catch {
     return null;
   }

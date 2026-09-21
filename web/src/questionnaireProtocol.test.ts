@@ -170,6 +170,32 @@ describe("questionnaireProtocol", () => {
     expect(questionnaireResultSummaryIsPremature(null, windowed)).toBe(false);
   });
 
+  it("uses the signed event timestamp for the premature guard, not a forged content createdAt (A4)", () => {
+    const windowed: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    // The signed event landed before the grace elapsed, but the (forgeable)
+    // content claims a far-future createdAt. max() would let the forged value win
+    // and fail open; the signed origin must keep the summary flagged premature.
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 99_999,
+      eventCreatedAt: windowed.closeAt + 10,
+    }, windowed)).toBe(true);
+    // min(signed, content): a content value earlier than the signed origin stays
+    // premature as well (fail closed in both directions).
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 10,
+      eventCreatedAt: windowed.closeAt + 99_999,
+    }, windowed)).toBe(true);
+    // Genuinely late on both clocks is not premature.
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 3_600,
+      eventCreatedAt: windowed.closeAt + 3_600,
+    }, windowed)).toBe(false);
+  });
+
   it("supports questionnaire-defined voter groups while preserving legacy aliases", () => {
     expect(normaliseQuestionnaireScope("A")).toBe("1");
     expect(normaliseQuestionnaireScope("North_District")).toBe("north_district");
