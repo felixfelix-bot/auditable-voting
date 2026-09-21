@@ -52,10 +52,21 @@ export function shouldShowQuestion(
     return true;
   }
 
-  // Cycle detection: if the question depends on itself directly, or (when we
-  // have the full question map) transitively, throw.
-  const visited = new Set<string>();
-  checkForCycle(question.questionId, condition.dependsOnQuestionId, allQuestions, visited);
+  // B4: fail closed on a hostile definition. A definition whose `showIf` graph contains a cycle
+  // is attacker-controlled input (ingest is unvalidated: questionnaireNostr.ts, and
+  // questionnaireDefinitionCache.ts only canonicalises). Throwing here aborted whatever read path
+  // happened to call it - the voter render (QuestionnaireAnswerFields.tsx), the response-payload
+  // validator (questionnaireProtocol.ts:874, :942), the runtime publish filter and the ballot
+  // validator. Reporting the question as hidden instead means a malicious definition can only
+  // ever hide questions: it cannot crash a voter, and it cannot make a hidden answer publishable.
+  // `CircularDependencyError` is still exported and `checkForCycle` still detects cycles, so
+  // definition-time validation can keep rejecting such definitions explicitly.
+  try {
+    const visited = new Set<string>();
+    checkForCycle(question.questionId, condition.dependsOnQuestionId, allQuestions, visited);
+  } catch {
+    return false;
+  }
 
   const depAnswer = answeredQuestions.get(condition.dependsOnQuestionId);
   if (depAnswer === undefined) {

@@ -218,21 +218,33 @@ describe("shouldShowQuestion — answer type mismatch", () => {
 /* 8. Circular dependency detection → error                           */
 /* ------------------------------------------------------------------ */
 
-describe("shouldShowQuestion — circular dependency detection", () => {
-  it("throws CircularDependencyError for direct self-reference", () => {
+describe("shouldShowQuestion — fail closed on a hostile definition (B4)", () => {
+  it("reports a direct self-reference as hidden instead of throwing", () => {
     const q = makeYesNoQuestion("q1", {
       showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
     });
-    expect(() => shouldShowQuestion(q, answeredMap(yesNoAnswer("q1", true)))).toThrow(CircularDependencyError);
+    expect(() => shouldShowQuestion(q, answeredMap(yesNoAnswer("q1", true)))).not.toThrow();
+    expect(shouldShowQuestion(q, answeredMap(yesNoAnswer("q1", true)))).toBe(false);
   });
 
-  it("throws CircularDependencyError for direct self-reference via a definitions map", () => {
+  it("reports a direct self-reference as hidden when a definitions map is supplied", () => {
     const q = makeYesNoQuestion("q1", {
       showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
     });
     const allQuestions = new Map([["q1", q]]);
-    expect(() => shouldShowQuestion(q, answeredMap(yesNoAnswer("q1", true)), allQuestions)).toThrow(
-      CircularDependencyError,
-    );
+    expect(shouldShowQuestion(q, answeredMap(yesNoAnswer("q1", true)), allQuestions)).toBe(false);
+  });
+
+  it("hides a transitive showIf cycle without throwing", () => {
+    const q1 = makeYesNoQuestion("q1", {
+      showIf: { dependsOnQuestionId: "q2", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const q2 = makeYesNoQuestion("q2", {
+      showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const allQuestions = new Map([["q1", q1], ["q2", q2]]);
+    const answers = answeredMap(yesNoAnswer("q1", true));
+    expect(() => shouldShowQuestion(q1, answers, allQuestions)).not.toThrow();
+    expect(shouldShowQuestion(q1, answers, allQuestions)).toBe(false);
   });
 });
