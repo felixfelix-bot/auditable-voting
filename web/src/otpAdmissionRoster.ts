@@ -8,15 +8,21 @@
  * channel selector (`otp-delivery-channel:` — see
  * `otpDelivery/selectorStorage.ts`).
  *
- * Security invariant: only the salted `saltHex:hashHex` string is stored.
- * The plaintext code is never written to storage, so a compromise of
- * `localStorage` cannot recover a resident's code.
+ * Security invariant: only the derived record produced by `hashOtp` is
+ * stored. The plaintext code is never written to storage. Note the honest
+ * bound: the record is a PBKDF2 derivation at a recorded work factor, and it is
+ * still a *weak* secret — a compromise of `localStorage` exposes every issued
+ * record in this browser, each of which is brute-forceable over the 10^6 code
+ * space. See `docs/otp-service-security.md#the-actual-bound-what-this-does-not-buy`.
  */
 
 export interface IssuedOtpRecord {
   /** The resident's integer masters-list number. */
   mastersListNumber: number;
-  /** The salted `saltHex:hashHex` value produced by `hashOtp`. Never plaintext. */
+  /**
+   * The derived code record produced by `hashOtp`
+   * (`pbkdf2-sha256$iterations$saltHex$digestHex`). Never plaintext.
+   */
   saltHash: string;
   /** Unix timestamp in milliseconds when the code was issued. */
   issuedAt: number;
@@ -308,4 +314,26 @@ export function findResidentNpubBinding(
   return loadResidentNpubBindings(electionId).find(
     (entry) => entry.mastersListNumber === mastersListNumber,
   );
+}
+
+/**
+ * Whether the given voter npub already redeemed a resident OTP on this
+ * device (persisted as a resident→npub binding).
+ *
+ * Used to restore the voter's admitted state across a reload: admission is
+ * device-local (see docs/voter-otp-entry.md under "Cross-device and reload
+ * behaviour"), and a persisted binding is strong evidence this browser
+ * already admitted this identity.
+ */
+export function hasPersistedResidentOtpAdmission(voterNpub: string | undefined): boolean {
+  if (!voterNpub?.trim()) {
+    return false;
+  }
+  const npub = voterNpub.trim();
+  for (const electionId of listIssuedOtpElectionIds()) {
+    if (loadResidentNpubBindings(electionId).some((entry) => entry.npub === npub)) {
+      return true;
+    }
+  }
+  return false;
 }
