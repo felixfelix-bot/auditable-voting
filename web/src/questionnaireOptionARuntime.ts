@@ -163,7 +163,6 @@ import {
   normaliseQuestionnairePrivateInviteMaxRedemptions,
   questionBallotCredentialScope,
   questionnaireCredentialsPerVoter,
-  QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
   questionnairePublicationPolicyFromDefinition,
   questionnairePublicationPolicyGraceUntil,
   questionnairePublicationPolicyReleaseAt,
@@ -180,7 +179,7 @@ import { mineGeneralInvitePow, verifyGeneralInvitePow } from "./questionnaireGen
 import type { QuestionnaireSubmissionDecisionReason } from "./questionnaireProtocol";
 import { mergeQuestionnaireRelayHints } from "./questionnaireRelays";
 import { DEFAULT_NOSTR_DM_RELAYS as SIMPLE_DM_RELAYS } from "./nostrRelayConfig";
-import { QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1, type QuestionnaireFlowMode } from "./questionnaireProtocolConstants";
+import { QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1, QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE, type QuestionnaireFlowMode } from "./questionnaireProtocolConstants";
 import {
   buildIssueBlindTokensWorkerRouting,
   mergeBlindRequestRoutingRelays,
@@ -3954,7 +3953,21 @@ export class QuestionnaireOptionAVoterRuntime {
     // released, so reject it explicitly instead of queueing a ballot that the
     // release pass would silently drop (or publishing it with the real time).
     const windowedReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
-    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy) ?? windowedReleaseAt;
+    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy);
+    // A3: a windowed round MUST define a strictly positive grace. Degrading a
+    // missing/non-positive grace to the release slot yields a zero-width window
+    // that would either drop the ballot or publish with the real submission time,
+    // so raise an explicit invalid-mode error instead of falling through.
+    if (windowedReleaseAt !== null && windowedGraceUntil === null) {
+      optionAFlowLog("voter", "submit_vote_release_grace_missing", {
+        electionId: this.state.electionId,
+        releaseAt: windowedReleaseAt,
+      });
+      throw new OptionARuntimeError(
+        "invalid_publication_mode",
+        "This questionnaire's windowed publication policy has no positive release grace, so the ballot was not published. Ask the coordinator to republish the questionnaire.",
+      );
+    }
     const submitNowSeconds = Math.floor(Date.now() / 1000);
     if (windowedReleaseAt !== null && windowedGraceUntil !== null && submitNowSeconds >= windowedGraceUntil) {
       optionAFlowLog("voter", "submit_vote_release_window_expired", {
