@@ -2921,6 +2921,80 @@ describe("questionnaireOptionARuntime", () => {
     expect(snapshot?.pendingPublicReleases?.[submissionId]?.graceUntil).toBe(definition.closeAt + 3600);
   });
 
+  async function setUpWindowedWindowedRound(windowedId: string, closeAt: number, graceSeconds: number) {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition({ electionId: windowedId, coordinatorNpub }),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: graceSeconds,
+      closeAt,
+    };
+    storeCachedQuestionnaireDefinition(definition);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    return { definition, voter };
+  }
+
+  it("rejects a ballot submitted after the windowed grace deadline (A2)", async () => {
+    const windowedId = `${electionId}_a2_past_grace`;
+    const closeAt = Math.floor(Date.now() / 1000) - 4_000;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, closeAt, 3_600);
+
+    await expect(voter.submitVote(["q1"])).rejects.toMatchObject({ code: "release_window_expired" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(Object.keys(voter.getSnapshot()?.pendingPublicReleases ?? {})).toHaveLength(0);
+  });
+
+  it("publishes immediately, stamped to the release slot, once the window has opened (A2)", async () => {
+    const windowedId = `${electionId}_a2_inside_window`;
+    const closeAt = Math.floor(Date.now() / 1000) - 60;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, closeAt, 3_600);
+
+    await voter.submitVote(["q1"]);
+
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: closeAt,
+      submittedAt: closeAt,
+    }));
+    expect(Object.keys(voter.getSnapshot()?.pendingPublicReleases ?? {})).toHaveLength(0);
+  });
+
+  it("freezes the stored submission timestamp to the release slot while queued (A2)", async () => {
+    const windowedId = `${electionId}_a2_frozen_timestamp`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    await voter.submitVote(["q1"]);
+
+    const snapshot = voter.getSnapshot();
+    expect(snapshot?.submission?.submittedAt).toBe(new Date(definition.closeAt * 1000).toISOString());
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
   it("fails closed instead of publishing immediately when the publication mode is unknown (A6)", async () => {
     const windowedId = `${electionId}_a6_unknown`;
     setUpWindowedElection(windowedId);

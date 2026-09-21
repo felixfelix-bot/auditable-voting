@@ -224,6 +224,7 @@ export type OptionARuntimeErrorCode =
   | "issuance_failed"
   | "dm_delivery_failed"
   | "invalid_publication_mode"
+  | "release_window_expired"
   | "invalid_submission";
 
 export class OptionARuntimeError extends Error {
@@ -3853,6 +3854,25 @@ export class QuestionnaireOptionAVoterRuntime {
         "This device does not know the questionnaire's publication policy, so the ballot was not published. Refresh the questionnaire definition and try again.",
       );
     }
+    // A2: the release slot and grace window of a windowed round are fixed at
+    // submit time. A ballot arriving after the grace has elapsed could never be
+    // released, so reject it explicitly instead of queueing a ballot that the
+    // release pass would silently drop (or publishing it with the real time).
+    const windowedReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
+    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy) ?? windowedReleaseAt;
+    const submitNowSeconds = Math.floor(Date.now() / 1000);
+    if (windowedReleaseAt !== null && windowedGraceUntil !== null && submitNowSeconds >= windowedGraceUntil) {
+      optionAFlowLog("voter", "submit_vote_release_window_expired", {
+        electionId: this.state.electionId,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+        nowSeconds: submitNowSeconds,
+      });
+      throw new OptionARuntimeError(
+        "release_window_expired",
+        "The release window for this questionnaire has closed, so this ballot was not published.",
+      );
+    }
     const credentialBundle = await this.buildSubmissionCredentialBundle(definition, submissionResponses, {
       credentialIndex: options?.credentialIndex,
     });
@@ -3895,7 +3915,11 @@ export class QuestionnaireOptionAVoterRuntime {
         electionId: this.state.electionId,
         responses: submissionResponses,
       },
-      submittedAt: nowIso(),
+      // A2: freeze the windowed submission's own timestamp to the shared release
+      // slot so a persisted/recovered record never reveals the real vote time.
+      submittedAt: windowedReleaseAt !== null
+        ? new Date(Math.floor(windowedReleaseAt) * 1000).toISOString()
+        : nowIso(),
       credential: primaryCredential.credential,
     };
 
@@ -3925,11 +3949,32 @@ export class QuestionnaireOptionAVoterRuntime {
     this.startVoterDmSubscriptions();
     saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
     void this.publishVoterStateSelfDm({ reason: "submit_vote_created", force: true });
-    const windowedReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
-    // A3 tightens this: a windowed round with a non-positive grace must fail
-    // closed rather than silently release at closeAt.
-    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy) ?? windowedReleaseAt;
     if (windowedReleaseAt !== null && windowedGraceUntil !== null) {
+      if (submitNowSeconds >= windowedReleaseAt) {
+        // A2: the release slot has already arrived, so publish now. The event is
+        // stamped to the shared release slot, never the real submission time, so
+        // a late-but-in-window ballot is indistinguishable from an on-time one.
+        const published = await this.publishStoredSubmissionAtReleaseSlot(submission, responseNsec, windowedReleaseAt);
+        optionAFlowLog("voter", "submit_vote_public_publish_result", {
+          electionId: this.state.electionId,
+          submissionId: submission.submissionId,
+          successes: published?.successes ?? 0,
+          failures: published?.failures ?? 0,
+          releaseAt: windowedReleaseAt,
+        });
+        if (!published || published.successes <= 0) {
+          throw new OptionARuntimeError("dm_delivery_failed", "No relay accepted the public ballot submission.");
+        }
+        await this.publishBallotSubmissionSelfCopyDm(submission, { fallbackNsec: responseNsec });
+        void this.publishVoterStateSelfDm({ reason: "submit_vote_completed", force: true });
+        optionAFlowLog("voter", "submit_vote_released_in_window", {
+          electionId: this.state.electionId,
+          submissionId: submission.submissionId,
+          releaseAt: windowedReleaseAt,
+          responseNpub,
+        });
+        return this.state;
+      }
       const releaseRecord: PendingPublicRelease = {
         submissionId: submission.submissionId,
         submissionKey: targetSubmissionKeys[0] ?? null,
@@ -3975,6 +4020,23 @@ export class QuestionnaireOptionAVoterRuntime {
       responseNpub,
     });
     return this.state;
+  }
+
+  /**
+   * Publishes a windowed submission stamped to its shared release slot (A2).
+   * EVERY windowed publish/release goes through this one helper so the released
+   * event always carries the shared release time and never the real vote time.
+   */
+  private publishStoredSubmissionAtReleaseSlot(
+    submission: BallotSubmission,
+    responseNsec: string,
+    releaseAt: number,
+  ) {
+    const slot = Math.floor(releaseAt);
+    return this.publishStoredSubmissionPublic(submission, responseNsec, {
+      eventCreatedAt: slot,
+      submittedAt: slot,
+    });
   }
 
   /**
@@ -4025,10 +4087,7 @@ export class QuestionnaireOptionAVoterRuntime {
         continue;
       }
       try {
-        const published = await this.publishStoredSubmissionPublic(submission, entry.responseNsec, {
-          eventCreatedAt: entry.releaseAt,
-          submittedAt: entry.releaseAt,
-        });
+        const published = await this.publishStoredSubmissionAtReleaseSlot(submission, entry.responseNsec, entry.releaseAt);
         if (!published || published.successes <= 0) {
           optionAFlowLog("voter", "windowed_release_publish_failed", {
             electionId: nextState.electionId,
