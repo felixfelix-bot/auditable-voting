@@ -2999,6 +2999,65 @@ describe("questionnaireOptionARuntime", () => {
     expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
   });
 
+  it("does not republish a queued windowed submission before its release slot (windowed guard)", async () => {
+    const windowedId = `${electionId}_republish_pre_release`;
+    const releaseAt = Math.floor(Date.now() / 1000) + 3_600;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, releaseAt, 3_600);
+
+    // Queue a windowed submission whose release slot is still in the future.
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(releaseAt);
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    // A republish attempt before the release slot must be skipped, not leaked out
+    // immediately with the real vote time.
+    await voter.submitVote([]);
+
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(voter.getSnapshot()?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(releaseAt);
+  });
+
+  it("republishes a queued windowed submission stamped to the shared release slot, not the real time", async () => {
+    const windowedId = `${electionId}_republish_release_slot`;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const simulatedReleaseAt = nowSeconds - 60; // release slot already opened, grace still open
+    const { voter } = await setUpWindowedWindowedRound(windowedId, nowSeconds + 3_600, 3_600);
+
+    // Queue a windowed submission with a future release slot...
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+
+    // ...then simulate that the release slot has since opened (without the
+    // release machinery having run), so the republish path is the one releasing.
+    (voter as unknown as { state: { pendingPublicReleases: Record<string, { releaseAt: number; graceUntil: number }> } }).state = {
+      ...snapshot!,
+      pendingPublicReleases: {
+        ...snapshot!.pendingPublicReleases!,
+        [submissionId]: {
+          ...snapshot!.pendingPublicReleases![submissionId]!,
+          releaseAt: simulatedReleaseAt,
+          graceUntil: nowSeconds + 3_600,
+        },
+      },
+    };
+
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    await voter.submitVote([]);
+
+    // The republished event must carry the shared release slot, never the real time.
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: simulatedReleaseAt,
+      submittedAt: simulatedReleaseAt,
+    }));
+  });
+
   it("rebuilds a queued windowed release from the self-state snapshot without persisting the responder nsec (A1)", async () => {
     const windowedId = `${electionId}_a1_recover_release`;
     const definition = setUpWindowedElection(windowedId);

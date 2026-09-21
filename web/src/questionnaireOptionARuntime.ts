@@ -3885,6 +3885,37 @@ export class QuestionnaireOptionAVoterRuntime {
         return this.state;
       }
       this.submissionRepublishAttemptAtBySubmissionId.set(submissionId, nowMs);
+      // A windowed submission queued for release must not be pushed out early
+      // by a republish attempt, and once its slot has opened it must be stamped
+      // to the shared release slot rather than the real vote time. This mirrors
+      // the guard in releasePendingPublicSubmissions so the two paths agree.
+      const pendingReleaseEntry = this.state.pendingPublicReleases?.[submissionId];
+      if (pendingReleaseEntry) {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        if (nowSeconds < pendingReleaseEntry.releaseAt) {
+          optionAFlowLog("voter", "submit_vote_republish_skipped_pre_release", {
+            electionId: this.state.electionId,
+            submissionId,
+            releaseAt: pendingReleaseEntry.releaseAt,
+            nowSeconds,
+          });
+          this.refreshIssuanceAndAcceptance();
+          return this.state;
+        }
+        if (nowSeconds >= pendingReleaseEntry.graceUntil) {
+          const rest = { ...(this.state.pendingPublicReleases ?? {}) };
+          delete rest[submissionId];
+          this.state = { ...this.state, pendingPublicReleases: rest };
+          saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+          optionAFlowLog("voter", "submit_vote_republish_skipped_past_grace", {
+            electionId: this.state.electionId,
+            submissionId,
+            graceUntil: pendingReleaseEntry.graceUntil,
+            nowSeconds,
+          });
+          return this.state;
+        }
+      }
       optionAFlowLog("voter", "submit_vote_republish_existing_public_submission", {
         electionId: this.state.electionId,
         submissionId,
@@ -3893,7 +3924,16 @@ export class QuestionnaireOptionAVoterRuntime {
       const existingCredentialBundle = submissionCredentialBundle(this.state.submission);
       const includeExistingCredentialBundle = Array.isArray(this.state.submission.credentialBundle)
         && this.state.submission.credentialBundle.length > 0;
-      const republished = await publishQuestionnaireBlindResponsePublic({
+      const republished = pendingReleaseEntry
+        // A2: a windowed republish MUST be stamped to the shared release slot,
+        // never the real vote time, so an in-window republish is
+        // indistinguishable from an on-time release.
+        ? await this.publishStoredSubmissionAtReleaseSlot(
+          this.state.submission,
+          this.state.responseNsec,
+          pendingReleaseEntry.releaseAt,
+        )
+        : await publishQuestionnaireBlindResponsePublic({
         responseNsec: this.state.responseNsec,
         questionnaireId: this.state.electionId,
         responseId: this.state.submission.submissionId,
