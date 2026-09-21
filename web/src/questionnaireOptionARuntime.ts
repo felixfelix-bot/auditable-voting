@@ -129,6 +129,7 @@ import {
   questionnaireDefinitionHashMatches,
   resolveQuestionnaireDefinitionHash,
 } from "./questionnaireDefinitionReference";
+import { optionAAnswersForVisibility } from "./questionnaireOptionA";
 import { visibleQuestionIds } from "./questionConditionEvaluator";
 import { fetchOptionAInviteDms, publishOptionAInviteDm } from "./questionnaireOptionAInviteDm";
 import type { SignerService } from "./services/signerService";
@@ -956,27 +957,6 @@ function publicDecisionToAcceptance(decision: QuestionnaireSubmissionDecision): 
   };
 }
 
-/** Answers reduced to the shape `showIf` conditions are evaluated against. */
-function answersForVisibility(responses: QuestionnaireAnswer[]): Map<string, QuestionnaireResponseAnswer> {
-  const map = new Map<string, QuestionnaireResponseAnswer>();
-  for (const answer of responses) {
-    if (answer.type === "yes_no") {
-      map.set(answer.questionId, {
-        questionId: answer.questionId,
-        answerType: "yes_no",
-        value: answer.answer === "yes",
-      });
-    } else if (answer.type === "multiple_choice") {
-      map.set(answer.questionId, {
-        questionId: answer.questionId,
-        answerType: "multiple_choice",
-        selectedOptionIds: [...answer.answer],
-      });
-    }
-  }
-  return map;
-}
-
 /**
  * Question ids that may appear in a published payload (B3).
  *
@@ -990,7 +970,7 @@ function visibleQuestionIdsForDefinition(
   if (!definition || !definition.questions.some((question) => question.showIf)) {
     return null;
   }
-  return visibleQuestionIds(definition, answersForVisibility(responses));
+  return visibleQuestionIds(definition, optionAAnswersForVisibility(responses));
 }
 
 function toQuestionnaireResponseAnswers(

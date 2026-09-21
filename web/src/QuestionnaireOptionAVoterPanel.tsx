@@ -12,6 +12,8 @@ import {
   QuestionnaireOptionAVoterRuntime,
   OptionARuntimeError,
 } from "./questionnaireOptionARuntime";
+import { optionAAnswersForVisibility } from "./questionnaireOptionA";
+import { visibleQuestionIds } from "./questionConditionEvaluator";
 import type { BallotScope, BallotSubmission, ElectionInviteMessage, QuestionnaireAnswer, VoterElectionLocalState } from "./questionnaireOptionA";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { deriveIdentityWords } from "./identityWords";
@@ -1044,7 +1046,32 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       ? acceptedQuestionKey.split("|").map((entry) => entry.split(":")[0]).filter(Boolean)
       : [],
   ), [acceptedQuestionKey]);
-  const activeQuestion = questions[activeQuestionIndex] ?? null;
+  /**
+   * B2: questions the voter cannot currently see under their `showIf` rules.
+   *
+   * Derived from the definition (where `showIf` lives, not the mapped question shape) plus the
+   * answers held for the active credential. Visibility is transitive along the `showIf` chain.
+   * A hidden question must not be presented, must not be required - otherwise closing a gate
+   * produces `missing_required_answer` - and its answer must not be published (B3).
+   */
+  const hiddenQuestionIdSet = useMemo(() => {
+    if (!currentDefinition || !currentDefinition.questions.some((question) => question.showIf)) {
+      return new Set<string>();
+    }
+    const visible = visibleQuestionIds(
+      currentDefinition,
+      optionAAnswersForVisibility(buildDraftResponsesForCredential(activeCredentialIndex)),
+    );
+    return new Set(
+      questions
+        .map((question) => question.questionId)
+        .filter((questionId) => !visible.has(questionId)),
+    );
+  }, [answers, currentDefinition, questions, activeCredentialIndex, showProxyBallotsTogether]);
+
+  const activeQuestion = hiddenQuestionIdSet.has(questions[activeQuestionIndex]?.questionId ?? "")
+    ? null
+    : questions[activeQuestionIndex] ?? null;
   const activeQuestionScope = perQuestionMode && activeQuestion
     ? scopedBallotScopeForQuestion(currentDefinition, activeQuestion.questionId, activeCredentialIndex, activeBallotGroup)
     : null;
@@ -1944,24 +1971,32 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   ]);
 
   const answerableQuestions = useMemo(
-    () => activeQuestionGroupEntries.map(({ question }) => question),
-    [activeQuestionGroupEntries],
+    () => activeQuestionGroupEntries
+      .map(({ question }) => question)
+      .filter((question) => !hiddenQuestionIdSet.has(question.questionId)),
+    [activeQuestionGroupEntries, hiddenQuestionIdSet],
   );
   const visibleQuestionEntries = useMemo(
     () => activeQuestion ? [{ question: activeQuestion, index: activeQuestionIndex }] : [],
     [activeQuestion, activeQuestionIndex],
   );
   const requiredQuestions = useMemo(
-    () => answerableQuestions.filter((question) => question.required || (question.type === "rank" && (question.minimumRanked ?? 0) > 0)),
-    [answerableQuestions],
+    () => answerableQuestions.filter((question) => (
+      !hiddenQuestionIdSet.has(question.questionId)
+      && (question.required || (question.type === "rank" && (question.minimumRanked ?? 0) > 0))
+    )),
+    [answerableQuestions, hiddenQuestionIdSet],
   );
   const requiredQuestionIds = useMemo(
     () => requiredQuestions.map((question) => question.questionId),
     [requiredQuestions],
   );
   const requiredQuestionsForQuestionnaire = useMemo(
-    () => questions.filter((question) => question.required || (question.type === "rank" && (question.minimumRanked ?? 0) > 0)),
-    [questions],
+    () => questions.filter((question) => (
+      !hiddenQuestionIdSet.has(question.questionId)
+      && (question.required || (question.type === "rank" && (question.minimumRanked ?? 0) > 0))
+    )),
+    [questions, hiddenQuestionIdSet],
   );
   const requiredQuestionIdsForQuestionnaire = useMemo(
     () => requiredQuestionsForQuestionnaire.map((question) => question.questionId),
@@ -2935,12 +2970,15 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     }
     try {
       await nextPaint();
+      const allVisibleQuestionIds = questions
+        .map((question) => question.questionId)
+        .filter((questionId) => !hiddenQuestionIdSet.has(questionId));
       const submitQuestionIds = perQuestionMode
         ? options?.submitAllQuestions
-          ? questions.map((question) => question.questionId)
+          ? allVisibleQuestionIds
           : activeQuestionIds
         : showProxyBallotsTogether
-          ? questions.map((question) => question.questionId)
+          ? allVisibleQuestionIds
           : [];
       const submitQuestionIdSet = new Set(submitQuestionIds);
       const submitRequiredQuestionSourceIds = options?.submitAllQuestions
