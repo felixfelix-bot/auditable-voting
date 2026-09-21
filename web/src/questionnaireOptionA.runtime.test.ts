@@ -13,9 +13,11 @@ import {
   listBlindRequests,
   loadCoordinatorState,
   loadElectionSummary,
+  loadVoterState,
   readAcceptance,
   readBlindIssuance,
   saveCoordinatorState,
+  saveVoterState,
   storeAcceptance,
   storeBlindIssuance,
   upsertElectionSummary,
@@ -652,6 +654,19 @@ async function processDelegatedCoordinatorQueues(input: {
   return next;
 }
 
+
+/**
+ * Removes only the shared questionnaire definition cache (A6). Voter state lives
+ * under separate keys, so windowed decisions must survive this eviction.
+ */
+function evictQuestionnaireDefinitionCache() {
+  for (const key of Object.keys(window.localStorage)) {
+    if (key.includes("questionnaire:definitions:v1")) {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
 describe("questionnaireOptionARuntime", () => {
   const electionId = "election_runtime_1";
   const coordinatorNpub = "npub1coordinatorruntime0000000000000000000000000000";
@@ -835,6 +850,7 @@ describe("questionnaireOptionARuntime", () => {
   it("runs request -> issuance -> submit -> acceptance and supports resume", async () => {
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const sentInvite = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -903,6 +919,7 @@ describe("questionnaireOptionARuntime", () => {
     const retryElectionId = `${electionId}_scoped_republish`;
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), retryElectionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId: retryElectionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const { invite } = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -1690,6 +1707,7 @@ describe("questionnaireOptionARuntime", () => {
   it("prevents duplicate issuance and duplicate accepted submissions from inflating unique count", async () => {
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const sentInvite = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -1874,6 +1892,7 @@ describe("questionnaireOptionARuntime", () => {
     const groupVoterNpub = "npub1privategroupcoderuntime0000000000000000000000000000";
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addBearerInviteCode(inviteCodeHash, { ballotGroup: "group_north" });
 
     const voter = new QuestionnaireOptionAVoterRuntime(signer(groupVoterNpub), electionId);
@@ -2835,5 +2854,102 @@ describe("questionnaireOptionARuntime", () => {
 
     expect(coordinator.getSnapshot()?.whitelist[voterNpub]?.claimState).toBe("whitelisted");
     expect(coordinator.getPendingAuthorizations()).toEqual([]);
+  });
+  function setUpWindowedElection(windowedId: string) {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition({ electionId: windowedId, coordinatorNpub }),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3600,
+    };
+    storeCachedQuestionnaireDefinition(definition);
+    return definition;
+  }
+
+  it("persists the publication mode into voter state so it outlives the definition cache (A6)", async () => {
+    const windowedId = `${electionId}_a6_mode`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+
+    expect(loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub })?.publicationPolicy).toEqual({
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3600,
+      closeAt: definition.closeAt,
+    });
+  });
+
+  it("keeps windowed publication when the definition cache is evicted before the vote (A6)", async () => {
+    const windowedId = `${electionId}_a6_evicted`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    expect(voter.getSnapshot()?.credentialReady).toBe(true);
+
+    evictQuestionnaireDefinitionCache();
+    expect(readCachedQuestionnaireDefinition(windowedId)).toBeNull();
+
+    await voter.publishProvisionalResponses(["q1"]);
+    expect(publishQuestionnaireProvisionalResponsePublic).not.toHaveBeenCalled();
+
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(definition.closeAt);
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.graceUntil).toBe(definition.closeAt + 3600);
+  });
+
+  it("fails closed instead of publishing immediately when the publication mode is unknown (A6)", async () => {
+    const windowedId = `${electionId}_a6_unknown`;
+    setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    // Simulate a device that never learned a release policy: the definition
+    // cache is gone and the persisted state carries no policy at all.
+    evictQuestionnaireDefinitionCache();
+    saveVoterState({ voterNpub, state: { ...stored!, publicationPolicy: null } });
+    expect(loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub })?.publicationPolicy).toBe(null);
+
+    const resumed = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await resumed.loginWithSigner(null);
+    await expect(resumed.submitVote(["q1"])).rejects.toMatchObject({ code: "invalid_publication_mode" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
   });
 });

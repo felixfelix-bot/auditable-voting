@@ -45,6 +45,7 @@ import {
   readBallotSubmissionAckRecord,
   readBlindRequestAckRecord,
   readElectionPrivateRelayPrefs,
+  readVoterPublicationPolicy,
   readAcceptance,
   readBallotAcceptanceDeliveryRecord,
   readBallotSubmissionAckDeliveryRecord,
@@ -162,13 +163,16 @@ import {
   normaliseQuestionnairePrivateInviteMaxRedemptions,
   questionBallotCredentialScope,
   questionnaireCredentialsPerVoter,
-  questionnaireGraceUntil,
-  questionnaireIsWindowedPublication,
-  questionnaireReleaseAt,
+  QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+  questionnairePublicationPolicyFromDefinition,
+  questionnairePublicationPolicyGraceUntil,
+  questionnairePublicationPolicyReleaseAt,
+  normaliseQuestionnairePublicationPolicy,
   questionnaireSubmissionTimestamp,
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireCredentialsPerVoter,
   type QuestionnaireDefinition,
+  type QuestionnairePublicationPolicy,
   type QuestionnaireResponseAnswer,
   type QuestionnaireSubmissionDecision,
 } from "./questionnaireProtocol";
@@ -219,6 +223,7 @@ export type OptionARuntimeErrorCode =
   | "definition_not_ready"
   | "issuance_failed"
   | "dm_delivery_failed"
+  | "invalid_publication_mode"
   | "invalid_submission";
 
 export class OptionARuntimeError extends Error {
@@ -2331,7 +2336,7 @@ export class QuestionnaireOptionAVoterRuntime {
     }
     const credentialIndex = Math.max(1, Math.floor(options?.credentialIndex ?? 1));
     const definition = readCachedQuestionnaireDefinition(this.state.electionId);
-    if (questionnaireIsWindowedPublication(definition)) {
+    if (questionnairePublicationPolicyReleaseAt(this.resolvePublicationPolicy()) !== null) {
       // Windowed rounds suppress live per-question hints: they are signed by the
       // same key as the final ballot and would reintroduce timing correlation.
       return null;
@@ -3663,6 +3668,50 @@ export class QuestionnaireOptionAVoterRuntime {
     return secrets;
   }
 
+  /**
+   * A6: read the release policy that governs this round.
+   *
+   * Voter-local state is consulted first because the shared definition cache can
+   * be evicted at any moment; the cache is only a fallback. Returning null means
+   * the mode is genuinely unknown and callers must fail closed instead of
+   * publishing immediately with the real submission time.
+   */
+  private resolvePublicationPolicy(): QuestionnairePublicationPolicy | null {
+    const electionId = this.state?.electionId ?? this.electionId;
+    // The freshly fetched definition is authoritative: a coordinator may have
+    // switched the round to windowed after the last local save.
+    const cachedPolicy = questionnairePublicationPolicyFromDefinition(readCachedQuestionnaireDefinition(electionId));
+    if (cachedPolicy) {
+      return cachedPolicy;
+    }
+    const inMemoryPolicy = normaliseQuestionnairePublicationPolicy(this.state?.publicationPolicy);
+    if (inMemoryPolicy) {
+      return inMemoryPolicy;
+    }
+    const invitedNpub = this.state?.invitedNpub;
+    const persistedPolicy = invitedNpub
+      ? readVoterPublicationPolicy({ voterNpub: invitedNpub, electionId })
+      : null;
+    if (persistedPolicy) {
+      return persistedPolicy;
+    }
+    // A questionnaire that has not been published yet (coordinator draft round)
+    // has no determinate mode. Treat it as the historical "immediate" default so
+    // the legacy pre-publication submit path keeps working; only a published/open
+    // round with an unknown mode is a fail-closed condition (A6).
+    if (loadElectionSummary(electionId)?.state === "draft") {
+      const draftDefinition = readCachedQuestionnaireDefinition(electionId);
+      return {
+        publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+        finalizationGraceSeconds: null,
+        closeAt: Number.isFinite(draftDefinition?.closeAt)
+          ? Math.floor(draftDefinition!.closeAt as number)
+          : Math.floor(Date.now() / 1000) + 3600,
+      };
+    }
+    return null;
+  }
+
   private async submitVoteInternal(requiredQuestionIds: string[], options?: SubmitVoteOptions) {
     if (!this.state) {
       throw new OptionARuntimeError("not_logged_in", "Login is required.");
@@ -3791,6 +3840,19 @@ export class QuestionnaireOptionAVoterRuntime {
       return this.state;
     }
 
+    // A6: never infer the release mode when the policy is unknown. Falling
+    // through would publish immediately with the real submission timestamp.
+    const publicationPolicy = this.resolvePublicationPolicy();
+    if (!publicationPolicy) {
+      optionAFlowLog("voter", "submit_vote_publication_policy_unknown", {
+        electionId: this.state.electionId,
+        questionIds: targetSubmissionKeys.join(","),
+      });
+      throw new OptionARuntimeError(
+        "invalid_publication_mode",
+        "This device does not know the questionnaire's publication policy, so the ballot was not published. Refresh the questionnaire definition and try again.",
+      );
+    }
     const credentialBundle = await this.buildSubmissionCredentialBundle(definition, submissionResponses, {
       credentialIndex: options?.credentialIndex,
     });
@@ -3863,8 +3925,10 @@ export class QuestionnaireOptionAVoterRuntime {
     this.startVoterDmSubscriptions();
     saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
     void this.publishVoterStateSelfDm({ reason: "submit_vote_created", force: true });
-    const windowedReleaseAt = questionnaireReleaseAt(definition);
-    const windowedGraceUntil = questionnaireGraceUntil(definition);
+    const windowedReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
+    // A3 tightens this: a windowed round with a non-positive grace must fail
+    // closed rather than silently release at closeAt.
+    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy) ?? windowedReleaseAt;
     if (windowedReleaseAt !== null && windowedGraceUntil !== null) {
       const releaseRecord: PendingPublicRelease = {
         submissionId: submission.submissionId,

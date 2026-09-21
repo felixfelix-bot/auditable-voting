@@ -803,6 +803,26 @@ function scopedBallotScopeForQuestion(
   return questionBallotCredentialScope(canonicalQuestion, canonicalIndex >= 0 ? canonicalIndex : index, credentialIndex);
 }
 
+/**
+ * Map a submit failure onto the message shown in the vote panel.
+ *
+ * The release-mode failures (A6/A3: unknown policy, A2: window closed) are
+ * user-actionable, so they get explicit copy instead of falling through to a
+ * generic catch.
+ */
+function optionAVoterSubmitErrorStatus(error: unknown): string {
+  if (error instanceof OptionARuntimeError) {
+    if (error.code === "invalid_publication_mode") {
+      return "This device cannot confirm how this questionnaire releases ballots, so nothing was published. Re-open the questionnaire to refresh its definition, then submit again.";
+    }
+    if (error.code === "release_window_expired") {
+      return "The release window for this questionnaire has closed, so this ballot was not published. Ask the coordinator for a new invitation.";
+    }
+    return error.message;
+  }
+  return error instanceof Error ? error.message : "Submit failed.";
+}
+
 export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptionAVoterPanelProps) {
   const displayMode = props.displayMode ?? "vote";
   const settingsMode = displayMode === "settings";
@@ -3023,7 +3043,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       if (options?.submitAllQuestions) {
         setFinalSubmissionPublishedElectionId(null);
       }
-      setStatus(error instanceof Error ? error.message : "Submit failed.");
+      setStatus(optionAVoterSubmitErrorStatus(error));
     } finally {
       setSubmitInFlight(false);
     }

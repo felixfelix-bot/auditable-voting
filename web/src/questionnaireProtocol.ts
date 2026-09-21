@@ -423,6 +423,109 @@ export function questionnaireGraceUntil(
 }
 
 /**
+ * Snapshot of the release policy persisted into voter-local state (A6).
+ *
+ * The shared definition cache can be evicted between the vote and the release.
+ * Without a local copy of the mode an evicted cache looks like "no window at
+ * all" and the ballot is published immediately with its real submission time,
+ * which is precisely the timing leak windowed publication exists to prevent.
+ */
+export type QuestionnairePublicationPolicy = {
+  publicationMode: QuestionnairePublicationMode;
+  /** Positive grace in seconds; null when the policy is malformed (fail closed). */
+  finalizationGraceSeconds: number | null;
+  closeAt: number;
+};
+
+function normaliseQuestionnaireGraceSeconds(value: unknown): number | null {
+  return Number.isFinite(value) && (value as number) > 0 ? Math.floor(value as number) : null;
+}
+
+/** Builds the persistable policy snapshot from a definition. */
+export function questionnairePublicationPolicyFromDefinition(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): QuestionnairePublicationPolicy | null {
+  if (!definition || !Number.isFinite(definition.closeAt)) {
+    // No definition (cache evicted) or no closeAt: we genuinely cannot tell the
+    // mode, so the caller must fail closed (A6) rather than publish immediately.
+    return null;
+  }
+  const mode = definition.publicationMode;
+  // A missing / undefined mode is the historical default and means "immediate":
+  // the round was never declared windowed, so releasing right away is correct.
+  // Only a windowed mode needs the fail-closed guard.
+  if (mode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return {
+      publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED,
+      finalizationGraceSeconds: normaliseQuestionnaireGraceSeconds(definition.finalizationGraceSeconds),
+      closeAt: Math.floor(definition.closeAt),
+    };
+  }
+  if (mode !== undefined && mode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE) {
+    // An explicit, unrecognised mode (e.g. a future format) must not be silently
+    // downgraded to immediate publication.
+    return null;
+  }
+  return {
+    publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+    finalizationGraceSeconds: null,
+    closeAt: Math.floor(definition.closeAt),
+  };
+}
+
+/** Validates an untrusted persisted policy snapshot; null means "unknown, fail closed". */
+export function normaliseQuestionnairePublicationPolicy(value: unknown): QuestionnairePublicationPolicy | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as {
+    publicationMode?: unknown;
+    finalizationGraceSeconds?: unknown;
+    closeAt?: unknown;
+  };
+  const mode = candidate.publicationMode;
+  if (mode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE && mode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return null;
+  }
+  if (!Number.isFinite(candidate.closeAt)) {
+    return null;
+  }
+  return {
+    publicationMode: mode,
+    finalizationGraceSeconds: mode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED
+      ? normaliseQuestionnaireGraceSeconds(candidate.finalizationGraceSeconds)
+      : null,
+    closeAt: Math.floor(candidate.closeAt as number),
+  };
+}
+
+/** Policy-level twin of questionnaireReleaseAt. */
+export function questionnairePublicationPolicyReleaseAt(
+  policy: Pick<QuestionnairePublicationPolicy, "publicationMode" | "closeAt"> | null | undefined,
+): number | null {
+  if (!policy || policy.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return null;
+  }
+  return Number.isFinite(policy.closeAt) ? Math.floor(policy.closeAt) : null;
+}
+
+/**
+ * Policy-level twin of questionnaireGraceUntil. Returns null when the grace is
+ * missing or non-positive so callers can fail closed instead of degrading a
+ * windowed round into an immediate publication (A3).
+ */
+export function questionnairePublicationPolicyGraceUntil(
+  policy: QuestionnairePublicationPolicy | null | undefined,
+): number | null {
+  const releaseAt = questionnairePublicationPolicyReleaseAt(policy);
+  if (releaseAt === null) {
+    return null;
+  }
+  const grace = policy?.finalizationGraceSeconds;
+  return Number.isFinite(grace) && (grace as number) > 0 ? releaseAt + Math.floor(grace as number) : null;
+}
+
+/**
  * Timestamp a public blind-token submission should carry. Windowed rounds use
  * the shared release slot so the public record does not reveal per-voter
  * submission time; immediate rounds use the supplied wall-clock time.

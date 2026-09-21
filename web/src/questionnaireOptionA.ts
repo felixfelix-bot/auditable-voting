@@ -8,6 +8,7 @@ import {
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireDefinition,
   type QuestionnaireDefinitionReference,
+  type QuestionnairePublicationPolicy,
 } from "./questionnaireProtocol";
 import { verifyGeneralInvitePow, type GeneralInvitePowProof } from "./questionnaireGeneralInvitePow";
 import type { QuestionnaireBlindPrivateKey, QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
@@ -312,6 +313,11 @@ export interface VoterElectionLocalState {
   submission?: BallotSubmission | null;
   submissions?: Record<string, BallotSubmission>;
   pendingPublicReleases?: Record<string, PendingPublicRelease>;
+  /**
+   * Release policy snapshot (A6). Persisted with the voter state so a windowed
+   * round stays windowed even after the shared definition cache is evicted.
+   */
+  publicationPolicy?: QuestionnairePublicationPolicy | null;
   submissionAccepted?: boolean | null;
   submissionAcceptedAt?: IsoTime | null;
   submissionDecisions?: Record<string, {
