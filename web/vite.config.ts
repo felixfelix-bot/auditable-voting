@@ -29,6 +29,7 @@ export default defineConfig(({ mode }) => ({
     : undefined,
   plugins: [react(), wasm()],
   test: {
+    include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
     setupFiles: ["./src/test/setup.ts"],
     environment: "node",
     coverage: {
