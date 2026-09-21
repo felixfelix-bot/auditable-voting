@@ -3885,34 +3885,62 @@ export class QuestionnaireOptionAVoterRuntime {
         return this.state;
       }
       this.submissionRepublishAttemptAtBySubmissionId.set(submissionId, nowMs);
-      // A windowed submission queued for release must not be pushed out early
-      // by a republish attempt, and once its slot has opened it must be stamped
-      // to the shared release slot rather than the real vote time. This mirrors
-      // the guard in releasePendingPublicSubmissions so the two paths agree.
+      // Decide whether this submission is windowed from the publication POLICY,
+      // not from whether a pendingPublicReleases entry happens to exist. A
+      // windowed submission published on the in-window immediate path creates
+      // no pending entry, so gating on entry presence let its republish fall
+      // through to a bare publish that leaked created_at = Date.now(). Resolving
+      // the window from the policy closes that hole and matches the submit path
+      // (A2) and releasePendingPublicSubmissions. When a pending entry exists it
+      // carries the same scheduled slot (they are equal in the real flow), so we
+      // prefer it there; without an entry we fall back to the policy-derived
+      // slot so the in-window immediate case is still guarded.
+      const publicationPolicy = this.resolvePublicationPolicy();
+      const policyReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
       const pendingReleaseEntry = this.state.pendingPublicReleases?.[submissionId];
-      if (pendingReleaseEntry) {
+      if (policyReleaseAt !== null) {
+        const pendingGraceUntil = publicationPolicy ? questionnairePublicationPolicyGraceUntil(publicationPolicy) : null;
+        const releaseAt = pendingReleaseEntry ? pendingReleaseEntry.releaseAt : policyReleaseAt;
+        const graceUntil = pendingReleaseEntry ? pendingReleaseEntry.graceUntil : pendingGraceUntil;
         const nowSeconds = Math.floor(Date.now() / 1000);
-        if (nowSeconds < pendingReleaseEntry.releaseAt) {
-          optionAFlowLog("voter", "submit_vote_republish_skipped_pre_release", {
+        // A missing/expired grace window can no longer release: skipping keeps a
+        // windowed ballot from ever leaking the real vote time (A2/A3).
+        if (graceUntil === null || nowSeconds >= graceUntil) {
+          const rest = { ...(this.state.pendingPublicReleases ?? {}) };
+          if (rest[submissionId]) {
+            delete rest[submissionId];
+            this.state = { ...this.state, pendingPublicReleases: rest };
+            saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+          }
+          optionAFlowLog("voter", "submit_vote_republish_skipped_past_grace", {
             electionId: this.state.electionId,
             submissionId,
-            releaseAt: pendingReleaseEntry.releaseAt,
+            graceUntil,
             nowSeconds,
           });
           this.refreshIssuanceAndAcceptance();
           return this.state;
         }
-        if (nowSeconds >= pendingReleaseEntry.graceUntil) {
-          const rest = { ...(this.state.pendingPublicReleases ?? {}) };
-          delete rest[submissionId];
-          this.state = { ...this.state, pendingPublicReleases: rest };
-          saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
-          optionAFlowLog("voter", "submit_vote_republish_skipped_past_grace", {
+        if (nowSeconds < releaseAt) {
+          optionAFlowLog("voter", "submit_vote_republish_skipped_pre_release", {
             electionId: this.state.electionId,
             submissionId,
-            graceUntil: pendingReleaseEntry.graceUntil,
+            releaseAt,
             nowSeconds,
           });
+          this.refreshIssuanceAndAcceptance();
+          return this.state;
+        }
+        // Already released by the release machinery: do not push it again
+        // (mirrors releasePendingPublicSubmissions).
+        if (pendingReleaseEntry?.releasedAt) {
+          optionAFlowLog("voter", "submit_vote_republish_skipped_released", {
+            electionId: this.state.electionId,
+            submissionId,
+            releasedAt: pendingReleaseEntry.releasedAt,
+            releaseAt,
+          });
+          this.refreshIssuanceAndAcceptance();
           return this.state;
         }
       }
@@ -3924,14 +3952,20 @@ export class QuestionnaireOptionAVoterRuntime {
       const existingCredentialBundle = submissionCredentialBundle(this.state.submission);
       const includeExistingCredentialBundle = Array.isArray(this.state.submission.credentialBundle)
         && this.state.submission.credentialBundle.length > 0;
-      const republished = pendingReleaseEntry
+      const republishedReleaseAt = pendingReleaseEntry && policyReleaseAt !== null
+        ? pendingReleaseEntry.releaseAt
+        : policyReleaseAt;
+      const republished = republishedReleaseAt !== null
         // A2: a windowed republish MUST be stamped to the shared release slot,
         // never the real vote time, so an in-window republish is
-        // indistinguishable from an on-time release.
+        // indistinguishable from an on-time release. Prefer the pending entry's
+        // scheduled slot when it exists; otherwise use the policy-derived slot
+        // so the guard works even when no entry exists (in-window immediate,
+        // pre-recovery).
         ? await this.publishStoredSubmissionAtReleaseSlot(
           this.state.submission,
           this.state.responseNsec,
-          pendingReleaseEntry.releaseAt,
+          republishedReleaseAt,
         )
         : await publishQuestionnaireBlindResponsePublic({
         responseNsec: this.state.responseNsec,
