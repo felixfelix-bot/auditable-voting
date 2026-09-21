@@ -120,11 +120,14 @@ import {
   type OptionAVoterStateSnapshot,
   type OptionABlindRequestFetchDiagnostics,
 } from "./questionnaireOptionABlindDm";
-import { readCachedQuestionnaireDefinition, storeCachedQuestionnaireDefinition } from "./questionnaireDefinitionCache";
+import { readCachedQuestionnaireDefinition, storeCachedQuestionnaireDefinition,
+  storeCachedQuestionnaireDefinitionReference,
+} from "./questionnaireDefinitionCache";
 import {
   buildQuestionnaireDefinitionReference,
   questionnaireDefinitionEventHash,
-  questionnaireDefinitionHash,
+  questionnaireDefinitionHashMatches,
+  resolveQuestionnaireDefinitionHash,
 } from "./questionnaireDefinitionReference";
 import { fetchOptionAInviteDms, publishOptionAInviteDm } from "./questionnaireOptionAInviteDm";
 import type { SignerService } from "./services/signerService";
@@ -269,11 +272,28 @@ function getPreferredQuestionnaireDmRelays(electionId: string) {
   );
 }
 
-function cacheQuestionnaireDefinitionForRuntime(definition: QuestionnaireDefinition) {
+function cacheQuestionnaireDefinitionForRuntime(
+  definition: QuestionnaireDefinition,
+  wire?: { definitionHash?: string | null; definitionEventId?: string | null } | null,
+) {
   const storedDefinition = storeCachedQuestionnaireDefinition(definition) ?? definition;
   const electionId = storedDefinition.questionnaireId.trim();
   if (!electionId) {
     return;
+  }
+  // B1: record the hash of the wire document alongside the parsed definition.
+  // `storeCachedQuestionnaireDefinition` canonicalises text fields, so for a
+  // definition published with bare-string text the cached object is NOT the
+  // document the Rust worker hashed. Carrying the wire hash here keeps every
+  // object-derived consumer (resolveQuestionnaireDefinitionHash) in agreement
+  // with the worker instead of silently diverging.
+  const wireDefinitionHash = wire?.definitionHash?.trim() ?? "";
+  if (wireDefinitionHash) {
+    storeCachedQuestionnaireDefinitionReference(buildQuestionnaireDefinitionReference({
+      definition: storedDefinition,
+      definitionEventId: wire?.definitionEventId ?? null,
+      definitionHash: wireDefinitionHash,
+    }));
   }
   const summary = loadElectionSummary(electionId);
   const coordinatorNpub = storedDefinition.coordinatorPubkey.trim();
@@ -1235,15 +1255,18 @@ export class QuestionnaireOptionAVoterRuntime {
         limit: 20,
         relays: relays.length > 0 ? relays : undefined,
       });
-      const latest = [...entries]
+      const latestEntry = [...entries]
         .filter((entry) => entry.definition.questionnaireId === input.state.electionId)
         .filter((entry) => {
           const expectedHash = input.state.inviteMessage?.definitionReference?.definitionHash?.trim() ?? "";
           return !expectedHash || questionnaireDefinitionEventHash(entry.event.content) === expectedHash;
         })
-        .sort((left, right) => Number(right.event.created_at ?? right.definition.createdAt ?? 0) - Number(left.event.created_at ?? left.definition.createdAt ?? 0))[0]?.definition ?? null;
-      if (latest) {
-        cacheQuestionnaireDefinitionForRuntime(latest);
+        .sort((left, right) => Number(right.event.created_at ?? right.definition.createdAt ?? 0) - Number(left.event.created_at ?? left.definition.createdAt ?? 0))[0] ?? null;
+      if (latestEntry) {
+        cacheQuestionnaireDefinitionForRuntime(latestEntry.definition, {
+          definitionHash: questionnaireDefinitionEventHash(latestEntry.event.content),
+          definitionEventId: latestEntry.event.id,
+        });
       }
     } catch {
       // A fresh public definition is preferred, but cached metadata is still usable offline.
@@ -1759,7 +1782,6 @@ export class QuestionnaireOptionAVoterRuntime {
       return false;
     }
     const definition = readCachedQuestionnaireDefinition(plan.electionId);
-    const definitionHash = definition ? questionnaireDefinitionHash(definition) : null;
     const definitionEventId = (definition as (QuestionnaireDefinition & { eventId?: string }) | null)?.eventId ?? null;
     const initial = this.state.blindRequest;
     const planScopeKeys = new Set(plan.ballotScopes.map(ballotScopeKey));
@@ -1767,7 +1789,7 @@ export class QuestionnaireOptionAVoterRuntime {
       !initial
       || plan.initialRequestId !== initial.requestId
       || plan.blindSigningKeyId !== initial.blindSigningKeyId
-      || (plan.definitionHash && definitionHash && plan.definitionHash !== definitionHash)
+      || (plan.definitionHash && definition && !questionnaireDefinitionHashMatches(plan.definitionHash, plan.electionId, definition))
       || (plan.definitionEventId && definitionEventId && plan.definitionEventId !== definitionEventId)
       || !planScopeKeys.has(ballotScopeKey(initial.ballotScope))
       || plan.ballotScopes.some((scope) => ballotScopeCredentialIndex(scope) > 2)
@@ -5665,7 +5687,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
     return {
       ...issuance,
       definition: undefined,
-      definitionHash: issuance.definitionHash ?? questionnaireDefinitionHash(definition),
+      definitionHash: issuance.definitionHash ?? resolveQuestionnaireDefinitionHash(definition.questionnaireId, definition),
       definitionEventId: issuance.definitionEventId ?? null,
     };
   }
@@ -6042,7 +6064,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
         continue;
       }
       await this.publishBlindRequestAckDm(request);
-      const definitionHash = cachedDefinition ? questionnaireDefinitionHash(cachedDefinition) : null;
+      const definitionHash = resolveQuestionnaireDefinitionHash(cachedDefinition?.questionnaireId, cachedDefinition);
       const existingIssuance = findIssuedBlindResponse(next, request);
       if (existingIssuance) {
         const enriched = this.enrichIssuanceWithDefinitionReference(existingIssuance);

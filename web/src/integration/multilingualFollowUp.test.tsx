@@ -9,9 +9,11 @@
  *     (F1) and whose later questions are gated behind `showIf` conditions (F2);
  *   - the condition evaluator and the visible-answer builder reading answers
  *     that were produced from a French-language rendering;
- *   - the deterministic definition hash staying stable when an English-only
- *     definition is upgraded to the multilingual shape (so i18n does not change
- *     a published questionnaire's identity);
+ *   - the wire hash (`questionnaireDefinitionHash`) pinning exactly the bytes
+ *     that were published, and the versioned shape hash
+ *     (`questionnaireDefinitionShapeHashV2`) carrying the "same questionnaire,
+ *     different localisation shape" identity that i18n used to overload onto
+ *     the wire hash (Track B / B1 correction);
  *   - a paper ballot (F3) printed in French from the same multilingual +
  *     conditional definition, because the ballot is the paper half of the same
  *     election;
@@ -36,7 +38,10 @@ import {
   canonicaliseQuestionnaireDefinitionText,
   type QuestionnaireDefinition,
 } from "../questionnaireProtocol";
-import { questionnaireDefinitionHash } from "../questionnaireDefinitionReference";
+import {
+  questionnaireDefinitionHash,
+  questionnaireDefinitionShapeHashV2,
+} from "../questionnaireDefinitionReference";
 import { generatePaperBallot } from "../paperBallot";
 import { generateVoterKeypair } from "../paperBallotBatch";
 
@@ -242,11 +247,18 @@ describe("multilingual definitions keep their protocol identity (F1)", () => {
     expect(canonical.questions[0].prompt).toEqual({ en: "Approve the budget?" });
   });
 
-  it("hashes a plain-string definition the same as its {\"en\"} equivalent", () => {
-    // Upgrading every text field to LocalisedText must not change the
-    // definition hash, or every published questionnaire would look "new".
-    expect(questionnaireDefinitionHash(buildEnglishOnlyDefinition())).toBe(
+  it("keeps the wire hash byte-exact and moves shape stability to the versioned hash", () => {
+    // B1 correction: `questionnaireDefinitionHash` is the wire contract - it
+    // hashes exactly the document that was published, because that is what the
+    // Rust worker hashes. Upgrading bare-string text fields to LocalisedText
+    // therefore DOES change it, deliberately.
+    expect(questionnaireDefinitionHash(buildEnglishOnlyDefinition())).not.toBe(
       questionnaireDefinitionHash(canonicaliseQuestionnaireDefinitionText(buildEnglishOnlyDefinition())),
+    );
+    // Shape stability - "the same questionnaire, only re-localised" - is still
+    // available, on the new versioned hash. It is never used as the wire pin.
+    expect(questionnaireDefinitionShapeHashV2(buildEnglishOnlyDefinition())).toBe(
+      questionnaireDefinitionShapeHashV2(canonicaliseQuestionnaireDefinitionText(buildEnglishOnlyDefinition())),
     );
   });
 

@@ -190,7 +190,21 @@ export type QuestionnaireDefinitionReference = {
   questionnaireId: string;
   coordinatorNpub?: string | null;
   relays?: string[];
+  /**
+   * SHA-256 of the definition event's wire content, canonicalised as JSON
+   * (`canonical_json` in worker/src/main.rs). This is the value the Rust worker
+   * derives from the same event, so it is the ONLY hash that may be compared
+   * with a worker / blind-plan / issuance pin.
+   */
   definitionHash?: string | null;
+  /**
+   * Shape-stable companion hash (B1 v2). Same wire-hash pre-image rules, but the
+   * pre-image is the canonical multilingual shape, so a definition published
+   * with bare strings and the same definition published with `LocalisedText`
+   * fields agree. It is a NEW versioned field on purpose: `definitionHash` keeps
+   * its wire meaning and is never redefined.
+   */
+  definitionHashV2?: string | null;
   definitionEventId?: string | null;
   createdAt?: number | null;
 };
