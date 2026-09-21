@@ -237,13 +237,20 @@ describe("ResidentOtpAdmission OTP verification", () => {
     );
     await userEvent.type(screen.getByLabelText("One-time code"), wrongCodeFor(code));
 
+    // Each verification runs the KDF (~0.3 s), so fire all the wrong-code
+    // attempts up front and then wait for the lockout message rather than
+    // racing a per-click `waitFor(truthy)` against the still-lingering
+    // previous "Incorrect code." status.
     for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
       await userEvent.click(screen.getByLabelText("Verify code"));
-      await waitFor(() => expect(screen.getByRole("status").textContent).toBeTruthy());
     }
 
-    expect(screen.getByRole("status").textContent).toBe(
-      "Too many failed attempts. Generate a new code to continue.",
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toBe(
+          "Too many failed attempts. Generate a new code to continue.",
+        ),
+      { timeout: 10_000 },
     );
   });
 
@@ -285,7 +292,8 @@ describe("ResidentOtpAdmission persistence and admission wiring", () => {
     const roster = loadIssuedOtpRoster(ELECTION_A);
     expect(roster).toHaveLength(1);
     expect(roster[0].mastersListNumber).toBe(101);
-    expect(roster[0].saltHash).toMatch(/^[0-9a-f]{32}:[0-9a-f]{64}$/);
+    // New stored format: `pbkdf2-sha256$iterations$saltHex$digestHex`.
+    expect(roster[0].saltHash).toMatch(/^pbkdf2-sha256\$\d+\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
 
     const raw = window.localStorage.getItem("otp-admission-roster:election-a") ?? "";
     expect(raw).not.toContain(code);
