@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import {
   ADMISSION_TTL_MS,
   MAX_OTP_ATTEMPTS,
+  UNVERIFIABLE_OTP_RECORD_MESSAGE,
+  classifyStoredOtpHash,
   isOtpExpired,
   verifyOtp,
 } from "./otpService";
@@ -87,16 +89,36 @@ export default function ResidentOtpEntry({ electionId, voterNpub, onAdmitted }: 
       return;
     }
 
-    if (isOtpRedeemed(record.electionId, mastersListNumberValue)) {
-      recordBindingIfKnown(mastersListNumberValue, record.electionId);
-      setAdmitted({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
-      setStatus("This code has already been redeemed.");
-      onAdmitted?.({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
+    // Fail closed (C2): a stored record this build refuses to verify — the
+    // pre-fix single-SHA-256 format, malformed input, or an out-of-range work
+    // factor — can never be admitted, on a fresh or an already-redeemed
+    // number. Tell the resident it is unreadable here and point them at the
+    // organiser, so they are not misled into thinking their code is wrong.
+    if (classifyStoredOtpHash(record.saltHash) !== "pbkdf2-sha256") {
+      setStatus(UNVERIFIABLE_OTP_RECORD_MESSAGE);
       return;
     }
 
     if (isOtpExpired(record.issuedAt, ADMISSION_TTL_MS)) {
       setStatus("This code has expired. Contact your organiser for a new one.");
+      return;
+    }
+
+    // An already-redeemed masters-list number must STILL verify the code
+    // (C3): the shipped build short-circuited to onAdmitted for any 6-digit
+    // input, so a wrong code unlocked voting. Only the correct code (which a
+    // returning resident genuinely re-enters) earns the "verified earlier on
+    // this device" admission; anything else is treated as a failed attempt.
+    if (isOtpRedeemed(record.electionId, mastersListNumberValue)) {
+      const matchesRedeemed = await verifyOtp(trimmedCode, record.saltHash);
+      if (matchesRedeemed) {
+        recordBindingIfKnown(mastersListNumberValue, record.electionId);
+        setAdmitted({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
+        setStatus("This code was redeemed earlier on this device. You are admitted to vote.");
+        onAdmitted?.({ mastersListNumber: mastersListNumberValue, electionId: record.electionId });
+      } else {
+        setStatus(failAttemptMessage(mastersListNumberValue));
+      }
       return;
     }
 
@@ -111,13 +133,21 @@ export default function ResidentOtpEntry({ electionId, voterNpub, onAdmitted }: 
       return;
     }
 
-    // Read and increment via the ref so two resolves landing before a
-    // re-render both count (no stale-closure undercount of the lockout).
+    setStatus(failAttemptMessage(mastersListNumberValue));
+  }
+
+  /**
+   * Record one failed verification attempt against a masters-list number and
+   * return the status copy (incorrect code, or lockout at MAX_OTP_ATTEMPTS).
+   * Read/increment via the ref so two resolves landing before a re-render
+   * both count (no stale-closure undercount of the lockout).
+   */
+  function failAttemptMessage(mastersListNumberValue: number): string {
     const attempts = (failedAttemptsRef.current[mastersListNumberValue] ?? 0) + 1;
     failedAttemptsRef.current = { ...failedAttemptsRef.current, [mastersListNumberValue]: attempts };
-    setStatus(attempts >= MAX_OTP_ATTEMPTS
+    return attempts >= MAX_OTP_ATTEMPTS
       ? "Too many failed attempts. Contact your organiser for a new code."
-      : "Incorrect code.");
+      : "Incorrect code.";
   }
 
   const canVerify = mastersListNumber.trim() !== "" && code.trim().length > 0;
@@ -129,6 +159,13 @@ export default function ResidentOtpEntry({ electionId, voterNpub, onAdmitted }: 
         Enter your masters list number and the 6-digit code your organiser
         gave you. Nothing is sent to a server; verification happens in this
         browser against the codes your organiser issued.
+      </p>
+      <p className="simple-voter-note simple-voter-note-muted">
+        Redemption works in this browser only — the issued-code roster your
+        organiser published is stored locally on this device, so re-entering
+        your code on a different browser or device will not grant admission
+        there. No record of your redemption is sent anywhere. Cross-device
+        admission is planned as a follow-up.
       </p>
       {admitted !== null ? (
         <p className="simple-voter-note" aria-label="Admission status">

@@ -3,8 +3,13 @@ import { webcrypto } from "node:crypto";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hashOtp, ADMISSION_TTL_MS, MAX_OTP_ATTEMPTS } from "./otpService";
-import { isOtpRedeemed, loadResidentNpubBindings, upsertIssuedOtpRecord } from "./otpAdmissionRoster";
+import { hashOtp, ADMISSION_TTL_MS, MAX_OTP_ATTEMPTS, UNVERIFIABLE_OTP_RECORD_MESSAGE } from "./otpService";
+import {
+  isOtpRedeemed,
+  loadResidentNpubBindings,
+  markOtpRedeemed,
+  upsertIssuedOtpRecord,
+} from "./otpAdmissionRoster";
 
 // jsdom provides crypto.getRandomValues but not crypto.subtle; otpService needs both.
 if (!globalThis.crypto?.subtle) {
@@ -138,11 +143,16 @@ describe("ResidentOtpEntry verification outcomes", () => {
 
     for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt += 1) {
       await userEvent.click(screen.getByLabelText("Verify code"));
-      await waitFor(() => expect(screen.getByRole("status").textContent).toBeTruthy());
     }
 
-    expect(screen.getByRole("status").textContent).toBe(
-      "Too many failed attempts. Contact your organiser for a new code.",
+    // Each attempt costs one PBKDF2 derivation (~0.3 s), so the lockout lands
+    // well past testing-library's 1 s default wait.
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toBe(
+          "Too many failed attempts. Contact your organiser for a new code.",
+        ),
+      { timeout: 10_000 },
     );
   });
 
@@ -169,5 +179,107 @@ describe("ResidentOtpEntry verification outcomes", () => {
       expect(screen.getByRole("status").textContent).toBe("Code verified. You are admitted to vote."),
     );
     expect(onAdmitted).toHaveBeenCalledWith({ mastersListNumber: 101, electionId: ELECTION_A });
+  });
+});
+
+// C3 — the already-redeemed branch must verify the code it is handed.
+// Shipped code short-circuited to onAdmitted for ANY 6-digit input once the
+// masters-list number was marked redeemed, and onAdmitted unhides the ballot
+// + private-invite panel in SimpleUiApp: a wrong code unlocked voting.
+describe("ResidentOtpEntry already-redeemed numbers (C3)", () => {
+  it("does not admit on a wrong code for an already-redeemed masters-list number", async () => {
+    const onAdmitted = vi.fn();
+    await seedIssuedCode(101, "424242");
+    markOtpRedeemed(ELECTION_A, 101);
+
+    render(<ResidentOtpEntry electionId={ELECTION_A} onAdmitted={onAdmitted} />);
+    await submitEntry("101", "000000");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe("Incorrect code."),
+    );
+    expect(onAdmitted).not.toHaveBeenCalled();
+  });
+
+  it("admits when the correct code is re-entered for an already-redeemed number", async () => {
+    const onAdmitted = vi.fn();
+    await seedIssuedCode(101, "424242");
+    markOtpRedeemed(ELECTION_A, 101);
+
+    render(<ResidentOtpEntry electionId={ELECTION_A} onAdmitted={onAdmitted} />);
+    await submitEntry("101", "424242");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe(
+        "This code was redeemed earlier on this device. You are admitted to vote.",
+      ),
+    );
+    expect(onAdmitted).toHaveBeenCalledWith({ mastersListNumber: 101, electionId: ELECTION_A });
+  });
+
+  it("locks out repeated wrong codes against an already-redeemed number", async () => {
+    const onAdmitted = vi.fn();
+    await seedIssuedCode(101, "424242");
+    markOtpRedeemed(ELECTION_A, 101);
+
+    render(<ResidentOtpEntry electionId={ELECTION_A} onAdmitted={onAdmitted} />);
+    await userEvent.type(screen.getByLabelText("Masters list number"), "101");
+    await userEvent.type(screen.getByLabelText("One-time code"), "000000");
+    for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt += 1) {
+      await userEvent.click(screen.getByLabelText("Verify code"));
+    }
+
+    await waitFor(
+      () =>
+        expect(screen.getByRole("status").textContent).toBe(
+          "Too many failed attempts. Contact your organiser for a new code.",
+        ),
+      { timeout: 10_000 },
+    );
+    expect(onAdmitted).not.toHaveBeenCalled();
+  });
+});
+
+// C2 (UI half) — a record this build refuses to verify must be reported as
+// such, not as a wrong code, and must never be honoured.
+describe("ResidentOtpEntry unverifiable stored records (C2)", () => {
+  const LEGACY_RECORD = "00112233445566778899aabbccddeeff:" + "ab".repeat(32);
+
+  it("explains an unverifiable stored record instead of reporting a wrong code", async () => {
+    const onAdmitted = vi.fn();
+    upsertIssuedOtpRecord({
+      mastersListNumber: 101,
+      saltHash: LEGACY_RECORD,
+      issuedAt: Date.now(),
+      electionId: ELECTION_A,
+    });
+
+    render(<ResidentOtpEntry electionId={ELECTION_A} onAdmitted={onAdmitted} />);
+    await submitEntry("101", "424242");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe(UNVERIFIABLE_OTP_RECORD_MESSAGE),
+    );
+    expect(onAdmitted).not.toHaveBeenCalled();
+    expect(isOtpRedeemed(ELECTION_A, 101)).toBe(false);
+  });
+
+  it("does not admit a legacy record even when the number is marked redeemed", async () => {
+    const onAdmitted = vi.fn();
+    upsertIssuedOtpRecord({
+      mastersListNumber: 101,
+      saltHash: LEGACY_RECORD,
+      issuedAt: Date.now(),
+      electionId: ELECTION_A,
+    });
+    markOtpRedeemed(ELECTION_A, 101);
+
+    render(<ResidentOtpEntry electionId={ELECTION_A} onAdmitted={onAdmitted} />);
+    await submitEntry("101", "424242");
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toBe(UNVERIFIABLE_OTP_RECORD_MESSAGE),
+    );
+    expect(onAdmitted).not.toHaveBeenCalled();
   });
 });
