@@ -26,6 +26,8 @@ import {
   fetchOptionABallotSubmissionDmsWithNsec,
   fetchOptionABlindIssuanceAckDms,
   fetchOptionAParticipantStatusDms,
+  fetchOptionAVoterStateDms,
+  fetchOptionAVoterStateDmsWithNsec,
   publishOptionABallotAcceptanceDm,
   publishOptionABallotSubmissionDm,
   publishOptionABlindIssuanceBundleDm,
@@ -124,6 +126,8 @@ vi.mock("./questionnaireOptionABlindDm", () => ({
   fetchOptionABlindRequestDmsWithNsec: vi.fn().mockResolvedValue([]),
   fetchOptionAParticipantStatusDms: vi.fn().mockResolvedValue([]),
   fetchOptionAParticipantStatusDmsWithNsec: vi.fn().mockResolvedValue([]),
+  fetchOptionAVoterStateDms: vi.fn().mockResolvedValue([]),
+  fetchOptionAVoterStateDmsWithNsec: vi.fn().mockResolvedValue([]),
   publishOptionABallotAcceptanceDm: vi.fn().mockResolvedValue({
     eventId: "mock-option-a-acceptance-dm",
     successes: 1,
@@ -2993,6 +2997,69 @@ describe("questionnaireOptionARuntime", () => {
     const snapshot = voter.getSnapshot();
     expect(snapshot?.submission?.submittedAt).toBe(new Date(definition.closeAt * 1000).toISOString());
     expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds a queued windowed release from the self-state snapshot without persisting the responder nsec (A1)", async () => {
+    const windowedId = `${electionId}_a1_recover_release`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    await voter.submitVote(["q1"]);
+    const submitted = voter.getSnapshot();
+    const submissionId = submitted?.submission?.submissionId ?? "";
+    const originalNsec = submitted?.pendingPublicReleases?.[submissionId]?.responseNsec ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(originalNsec.startsWith("nsec1")).toBe(true);
+
+    // The self-state snapshot that leaves the device must NOT carry the responder
+    // nsec, but it must carry the release metadata so a reload can rebuild it.
+    // The self-copy publish is fire-and-forget, so wait for it to land.
+    type SnapshotCall = { snapshot?: { pendingPublicReleases?: Record<string, Record<string, unknown>> } };
+    const findRestored = () => vi.mocked(publishOptionAVoterStateDm).mock.calls
+      .map((call) => call[0] as SnapshotCall)
+      .reverse()
+      .find((call) => Boolean(call.snapshot?.pendingPublicReleases?.[submissionId]));
+    await vi.waitFor(() => {
+      expect(findRestored()).toBeTruthy();
+    });
+    const restored = findRestored();
+    expect(restored).toBeTruthy();
+    const wireRecord = restored!.snapshot!.pendingPublicReleases![submissionId];
+    expect(wireRecord).not.toHaveProperty("responseNsec");
+    expect(wireRecord.releaseAt).toBe(definition.closeAt);
+
+    // Simulate losing the local pending-release map (reload on a fresh device).
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    const withoutReleases = { ...stored! } as Record<string, unknown>;
+    delete withoutReleases.pendingPublicReleases;
+    saveVoterState({ voterNpub, state: withoutReleases as never });
+
+    const recovered = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await recovered.loginWithSigner(null);
+    expect(recovered.getSnapshot()?.pendingPublicReleases?.[submissionId]).toBeUndefined();
+
+    vi.mocked(fetchOptionAVoterStateDms).mockResolvedValue([restored!.snapshot as never]);
+    await recovered.recoverVoterStateFromSelfDm();
+
+    const rebuilt = recovered.getSnapshot()?.pendingPublicReleases?.[submissionId];
+    expect(rebuilt).toBeTruthy();
+    expect(rebuilt?.releaseAt).toBe(definition.closeAt);
+    expect(rebuilt?.graceUntil).toBe(definition.closeAt + 3600);
+    expect(rebuilt?.responseNsec).toBe(originalNsec);
   });
 
   it("fails closed instead of publishing immediately when the publication mode is unknown (A6)", async () => {

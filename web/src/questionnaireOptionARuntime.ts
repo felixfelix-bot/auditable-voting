@@ -500,6 +500,31 @@ function hasCompatibleBlindTokenSecretKey(
   return Boolean(secret) && (!expectedKeyId || secret?.blindSigningPublicKey.keyId === expectedKeyId);
 }
 
+/**
+ * Strips the responder nsec from pending windowed releases before they are
+ * written into a self-state snapshot (A1). The snapshot must never persist the
+ * responder secret; recovery re-derives it from the issued token secrets.
+ */
+function stripPendingPublicReleaseSecrets(
+  pending: Record<string, PendingPublicRelease> | undefined,
+): Record<string, Omit<PendingPublicRelease, "responseNsec">> | undefined {
+  if (!pending) {
+    return undefined;
+  }
+  const stripped: Record<string, Omit<PendingPublicRelease, "responseNsec">> = {};
+  for (const [submissionId, entry] of Object.entries(pending)) {
+    stripped[submissionId] = {
+      submissionId: entry.submissionId,
+      submissionKey: entry.submissionKey ?? null,
+      releaseAt: entry.releaseAt,
+      graceUntil: entry.graceUntil,
+      releasedAt: entry.releasedAt ?? null,
+      releasedEventId: entry.releasedEventId ?? null,
+    };
+  }
+  return stripped;
+}
+
 type ResponseSecretMaterial = {
   tokenSecret: string;
   tokenCommitment: string;
@@ -1466,6 +1491,7 @@ export class QuestionnaireOptionAVoterRuntime {
       submissionAccepted: state.submissionAccepted ?? null,
       submissionAcceptedAt: state.submissionAcceptedAt ?? null,
       submissionDecisions: state.submissionDecisions ?? {},
+      pendingPublicReleases: stripPendingPublicReleaseSecrets(state.pendingPublicReleases),
       lastUpdatedAt: state.lastUpdatedAt,
     };
   }
@@ -1568,7 +1594,7 @@ export class QuestionnaireOptionAVoterRuntime {
     }
   }
 
-  private applyRecoveredVoterStateSnapshot(snapshot: OptionAVoterStateSnapshot) {
+  private async applyRecoveredVoterStateSnapshot(snapshot: OptionAVoterStateSnapshot) {
     if (!this.state) {
       return false;
     }
@@ -1630,6 +1656,16 @@ export class QuestionnaireOptionAVoterRuntime {
         ...(this.state.submissionDecisions ?? {}),
       },
       lastUpdatedAt: snapshotLooksNewer ? snapshot.lastUpdatedAt : this.state.lastUpdatedAt,
+    };
+    // A1: rebuild queued windowed releases from the snapshot, re-deriving the
+    // responder nsec locally instead of persisting it. Locally-known records win.
+    const inheritedReleases = await this.rebuildRecoveredPendingPublicReleases(next, snapshot);
+    next = {
+      ...next,
+      pendingPublicReleases: {
+        ...inheritedReleases,
+        ...(this.state.pendingPublicReleases ?? {}),
+      },
     };
     next = reconcileVoterCredentialReadyForDefinition(next, readCachedQuestionnaireDefinition(next.electionId));
     if (next.blindIssuance && voterHasTokenSecretForIssuance(next, next.blindIssuance)) {
@@ -1694,7 +1730,7 @@ export class QuestionnaireOptionAVoterRuntime {
       .filter((snapshot) => snapshot.electionId === this.state?.electionId && snapshot.invitedNpub === this.state?.invitedNpub)
       .sort((left, right) => Date.parse(right.lastUpdatedAt) - Date.parse(left.lastUpdatedAt))[0] ?? null;
     if (latest) {
-      this.applyRecoveredVoterStateSnapshot(latest);
+      await this.applyRecoveredVoterStateSnapshot(latest);
     }
     return this.state;
   }
@@ -2245,6 +2281,65 @@ export class QuestionnaireOptionAVoterRuntime {
     void this.publishVoterStateSelfDm({ reason: "bootstrap_local_identity" });
     void this.publishParticipantStatus("voter_live");
     return readyState;
+  }
+
+  /**
+   * Re-derives the responder nsec from the issued token secrets carried in the
+   * snapshot (A1). The derivation domain is shared with the submit path
+   * (auditable-voting/questionnaire-response-identity/v2) so a rebuilt release
+   * signs with exactly the identity the ballot was submitted under.
+   */
+  private async deriveRecoveredResponderNsec(state: VoterElectionLocalState): Promise<string | null> {
+    const secrets: ResponseSecretMaterial[] = Object.values(state.blindTokenSecrets ?? {}).map((secret) => ({
+      tokenSecret: secret.tokenSecret,
+      tokenCommitment: secret.tokenCommitment,
+      ballotScope: secret.ballotScope ?? state.blindIssuance?.ballotScope ?? null,
+    }));
+    if (secrets.length === 0) {
+      const single = state.blindTokenSecret ?? null;
+      if (!single) {
+        return null;
+      }
+      secrets.push({
+        tokenSecret: single.tokenSecret,
+        tokenCommitment: single.tokenCommitment,
+        ballotScope: single.ballotScope ?? state.blindIssuance?.ballotScope ?? null,
+      });
+    }
+    const key = await deriveDeterministicResponseSecretKey({
+      electionId: state.electionId,
+      secrets,
+    });
+    return nip19.nsecEncode(key);
+  }
+
+  private async rebuildRecoveredPendingPublicReleases(
+    state: VoterElectionLocalState,
+    snapshot: OptionAVoterStateSnapshot,
+  ): Promise<Record<string, PendingPublicRelease>> {
+    const wire = snapshot.pendingPublicReleases ?? {};
+    const submissionIds = Object.keys(wire);
+    if (submissionIds.length === 0) {
+      return {};
+    }
+    const responseNsec = await this.deriveRecoveredResponderNsec(state);
+    if (!responseNsec) {
+      return {};
+    }
+    const rebuilt: Record<string, PendingPublicRelease> = {};
+    for (const submissionId of submissionIds) {
+      const entry = wire[submissionId]!;
+      rebuilt[submissionId] = {
+        submissionId: entry.submissionId ?? submissionId,
+        submissionKey: entry.submissionKey ?? null,
+        responseNsec,
+        releaseAt: entry.releaseAt,
+        graceUntil: entry.graceUntil,
+        releasedAt: entry.releasedAt ?? null,
+        releasedEventId: entry.releasedEventId ?? null,
+      };
+    }
+    return rebuilt;
   }
 
   private applyRecoveredSubmission(submission: BallotSubmission) {
