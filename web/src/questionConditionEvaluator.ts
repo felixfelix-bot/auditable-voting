@@ -15,6 +15,7 @@
  */
 
 import type {
+  QuestionnaireDefinition,
   QuestionnaireQuestion,
   QuestionnaireResponseAnswer,
 } from "./questionnaireProtocol";
@@ -145,4 +146,37 @@ function evaluateCondition(
 
   // Answer type mismatch → fail safe (hide).
   return false;
+}
+/**
+ * The question ids that the voter can currently see under their `showIf` rules.
+ *
+ * Visibility is transitive along the `showIf` chain: a question whose dependency is itself hidden
+ * stays hidden even when the retained answer to that dependency would satisfy its condition. A
+ * voter who answered Q2 while Q1 was "yes" and then flips Q1 to "no" must not have a stale Q2
+ * answer satisfy a Q3 that depends on Q2 - otherwise the chained follow-up leaks the answer to a
+ * question the voter can no longer see. `showIf` may only reference an earlier question in the
+ * definition (see `validateQuestionnaireDefinition`), so one ordered pass is exact.
+ *
+ * `answeredQuestions` may itself contain answers for hidden questions; that is precisely the state
+ * this function has to reason about. It is the single source of truth used to keep hidden answers
+ * out of published payloads.
+ */
+export function visibleQuestionIds(
+  definition: QuestionnaireDefinition,
+  answeredQuestions: Map<string, QuestionnaireResponseAnswer>,
+): Set<string> {
+  const questionMap = new Map<string, QuestionnaireQuestion>(
+    definition.questions.map((question) => [question.questionId, question]),
+  );
+  const visible = new Set<string>();
+  for (const question of definition.questions) {
+    const dependencyId = question.showIf?.dependsOnQuestionId;
+    if (dependencyId !== undefined && !visible.has(dependencyId)) {
+      continue;
+    }
+    if (shouldShowQuestion(question, answeredQuestions, questionMap)) {
+      visible.add(question.questionId);
+    }
+  }
+  return visible;
 }
