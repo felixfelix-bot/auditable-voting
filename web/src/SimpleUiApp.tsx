@@ -4,6 +4,7 @@ import { decodeNsec, deriveNpubFromNsec, isValidNpub } from "./nostrIdentity";
 import { deriveActorDisplayId } from "./actorDisplay";
 import QuestionnaireVoterPanel from "./QuestionnaireVoterPanel";
 import ResidentOtpEntry from "./ResidentOtpEntry";
+import { hasPersistedResidentOtpAdmission } from "./otpAdmissionRoster";
 import SimpleIdentityPanel from "./SimpleIdentityPanel";
 import SimpleMessagesPanel from "./SimpleMessagesPanel";
 import SimpleQrScanner from "./SimpleQrScanner";
@@ -914,6 +915,21 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
   useEffect(() => {
     setNip65EnabledForSession(nip65Enabled);
   }, [nip65Enabled]);
+
+  // C4: restore the voter's resident-admission state across a reload. Redemption
+  // is device-local (same browser), so a persisted resident→npub binding for the
+  // active voter is strong evidence this browser already admitted them — no
+  // reload should silently revoke ballot/private-invite access that was already
+  // granted on this device. The binding is only ever written by a verified
+  // redemption, so this cannot admit an un-verified identity.
+  useEffect(() => {
+    if (!identityReady || !activeVoterNpub || residentAdmitted) {
+      return;
+    }
+    if (hasPersistedResidentOtpAdmission(activeVoterNpub)) {
+      setResidentAdmitted(true);
+    }
+  }, [identityReady, activeVoterNpub, residentAdmitted]);
 
   useEffect(() => {
     if (!identityReady || !voterKeypair) {
