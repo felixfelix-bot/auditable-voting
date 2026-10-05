@@ -1,4 +1,4 @@
-import { nip19, type Filter, type NostrEvent } from "nostr-tools";
+import { nip19, verifyEvent, type Filter, type NostrEvent } from "nostr-tools";
 import { recordRelayCloseReasons, selectRelaysWithBackoff, rankRelaysByBackoff } from "./relayBackoff";
 import {
   fetchQuestionnaireEventsWithFallback,
@@ -67,9 +67,15 @@ export type QuestionnaireBlindAdmissionDecision = {
   event: NostrEvent;
   response: QuestionnaireBlindResponseEvent;
   accepted: boolean;
-  rejectionReason: "duplicate_nullifier" | "duplicate_response" | "invalid_token_proof" | "invalid_payload_shape" | "questionnaire_closed" | null;
+  rejectionReason: "duplicate_nullifier" | "duplicate_response" | "invalid_token_proof" | "invalid_payload_shape" | "questionnaire_closed" | "unknown_token_proof" | null;
   decidedAt?: number | null;
   decisionEventId?: string | null;
+};
+
+export type QuestionnaireBlindProofVerdict = {
+  verdict: "valid" | "invalid" | "unknown";
+  reason: string | null;
+  component: "questionnaire_blind_token_proof";
 };
 
 type QuestionnaireSubmissionDecisionEntry = {
@@ -107,6 +113,10 @@ function toHexPubkey(value?: string | null) {
     }
   }
   return /^[0-9a-f]{64}$/i.test(trimmed) ? trimmed.toLowerCase() : "";
+}
+
+function isAuthenticBlindResponseEvent(event: NostrEvent, response: QuestionnaireBlindResponseEvent) {
+  return verifyEvent(event) && event.pubkey.toLowerCase() === toHexPubkey(response.authorPubkey);
 }
 
 async function fetchWorkerControlEventsByCoordinator(input: {
@@ -164,9 +174,17 @@ export async function fetchQuestionnaireDefinitions(input: {
     parseQuestionnaireIdFromEvent: (event) => parseQuestionnaireDefinitionEvent(event)?.questionnaireId ?? null,
   })).events;
 
-  return events
-    .map((event) => ({ event, definition: parseQuestionnaireDefinitionEvent(event) }))
-    .filter((entry): entry is { event: NostrEvent; definition: QuestionnaireDefinition } => Boolean(entry.definition));
+  const definitions: Array<{ event: NostrEvent; definition: QuestionnaireDefinition }> = [];
+  for (const event of events) {
+    if (!verifyEvent(event)) {
+      continue;
+    }
+    const definition = parseQuestionnaireDefinitionEvent(event);
+    if (definition) {
+      definitions.push({ event, definition });
+    }
+  }
+  return definitions;
 }
 
 export async function fetchLatestQuestionnaireDefinitionByCoordinator(input: {
@@ -326,10 +344,14 @@ export async function fetchQuestionnaireBlindResponses(input: {
     },
   })).events;
 
-  return events
-    .map((event) => ({ event, response: parseQuestionnaireBlindResponseEvent(event.content) }))
-    .filter((entry) => entry.response?.questionnaireId === input.questionnaireId)
-    .filter((entry): entry is { event: NostrEvent; response: QuestionnaireBlindResponseEvent } => Boolean(entry.response));
+  const responses: QuestionnaireBlindResponseEntry[] = [];
+  for (const event of events) {
+    const response = parseQuestionnaireBlindResponseEvent(event.content);
+    if (response?.questionnaireId === input.questionnaireId && isAuthenticBlindResponseEvent(event, response)) {
+      responses.push({ event, response });
+    }
+  }
+  return responses;
 }
 
 export async function fetchQuestionnaireProvisionalResponses(input: {
@@ -376,7 +398,7 @@ export function subscribeQuestionnaireBlindResponses(input: {
   }, {
     onevent(event) {
       const response = parseQuestionnaireBlindResponseEvent(event.content);
-      if (!response) {
+      if (!response || !isAuthenticBlindResponseEvent(event, response)) {
         return;
       }
       if (response.questionnaireId !== input.questionnaireId) {
@@ -461,6 +483,12 @@ function responseTokenProofs(response: QuestionnaireBlindResponseEvent) {
   return response.tokenProofs?.length ? response.tokenProofs : [response.tokenProof];
 }
 
+function responseTokenCommitments(response: QuestionnaireBlindResponseEvent) {
+  return responseTokenProofs(response)
+    .map((proof) => proof.tokenCommitment.trim())
+    .filter(Boolean);
+}
+
 function choosePreferredSubmissionDecision(
   existing: QuestionnaireSubmissionDecisionEntry | undefined,
   next: QuestionnaireSubmissionDecisionEntry,
@@ -479,12 +507,12 @@ function choosePreferredSubmissionDecision(
 export function evaluateQuestionnaireBlindAdmissions(input: {
   entries: QuestionnaireBlindResponseEntry[];
   decisionEntries?: QuestionnaireSubmissionDecisionEntry[];
-  verifiedResponseIds?: Iterable<string>;
+  proofVerdicts?: Iterable<readonly [string, QuestionnaireBlindProofVerdict]>;
   requireVerifiedProofs?: boolean;
 }) {
   const ordered = dedupeBlindResponseEntries(input.entries);
-  const verifiedResponseIds = new Set(Array.from(input.verifiedResponseIds ?? []).map((entry) => entry.trim()).filter(Boolean));
-  const requireVerifiedProofs = input.requireVerifiedProofs ?? Boolean(input.verifiedResponseIds);
+  const proofVerdictByResponseId = new Map<string, QuestionnaireBlindProofVerdict>(input.proofVerdicts ?? []);
+  const requireVerifiedProofs = input.requireVerifiedProofs ?? (input.proofVerdicts !== undefined);
   const latestDecisionBySubmissionId = new Map<string, QuestionnaireSubmissionDecisionEntry>();
   for (const entry of input.decisionEntries ?? []) {
     const submissionId = entry.decision.submissionId.trim();
@@ -497,25 +525,28 @@ export function evaluateQuestionnaireBlindAdmissions(input: {
     );
   }
   const acceptedNullifiers = new Set<string>();
+  const acceptedTokenCommitments = new Set<string>();
   const acceptedResponseIds = new Set<string>();
   const decisions: QuestionnaireBlindAdmissionDecision[] = [];
 
   for (const entry of ordered) {
     const responseId = entry.response.responseId.trim();
     const explicitDecision = latestDecisionBySubmissionId.get(responseId);
-    const proofVerified = Boolean(responseId && verifiedResponseIds.has(responseId));
-    if (requireVerifiedProofs && !proofVerified) {
+    const proofVerdict = proofVerdictByResponseId.get(responseId);
+    const proofValid = proofVerdict?.verdict === "valid";
+    if (requireVerifiedProofs && !proofValid) {
+      const proofUnknown = proofVerdict?.verdict === "unknown";
       decisions.push({
         ...entry,
         accepted: false,
-        rejectionReason: "invalid_token_proof",
+        rejectionReason: proofUnknown ? "unknown_token_proof" : "invalid_token_proof",
         decidedAt: explicitDecision?.decision.accepted === false ? explicitDecision.decision.decidedAt : null,
         decisionEventId: explicitDecision?.decision.accepted === false ? explicitDecision.event.id : null,
       });
       continue;
     }
     const verifiedResponseOverridesInvalidProof = Boolean(
-      proofVerified
+      proofValid
       && explicitDecision
       && !explicitDecision.decision.accepted
       && explicitDecision.decision.reason === "invalid_token_proof",
@@ -534,6 +565,9 @@ export function evaluateQuestionnaireBlindAdmissions(input: {
         for (const nullifier of responseNullifiers(entry.response)) {
           acceptedNullifiers.add(nullifier);
         }
+        for (const commitment of responseTokenCommitments(entry.response)) {
+          acceptedTokenCommitments.add(commitment);
+        }
         if (responseId) {
           acceptedResponseIds.add(responseId);
         }
@@ -551,7 +585,11 @@ export function evaluateQuestionnaireBlindAdmissions(input: {
       continue;
     }
     const nullifiers = responseNullifiers(entry.response);
-    if (nullifiers.some((nullifier) => acceptedNullifiers.has(nullifier))) {
+    const commitments = responseTokenCommitments(entry.response);
+    if (
+      nullifiers.some((nullifier) => acceptedNullifiers.has(nullifier))
+      || commitments.some((commitment) => acceptedTokenCommitments.has(commitment))
+    ) {
       decisions.push({
         ...entry,
         accepted: false,
@@ -564,6 +602,9 @@ export function evaluateQuestionnaireBlindAdmissions(input: {
 
     for (const nullifier of nullifiers) {
       acceptedNullifiers.add(nullifier);
+    }
+    for (const commitment of commitments) {
+      acceptedTokenCommitments.add(commitment);
     }
     if (responseId) {
       acceptedResponseIds.add(responseId);
@@ -587,15 +628,32 @@ export function evaluateQuestionnaireBlindAdmissions(input: {
   };
 }
 
-export async function verifyQuestionnaireBlindResponseProofs(input: {
+export async function verifyQuestionnaireBlindResponseProofVerdicts(input: {
   entries: QuestionnaireBlindResponseEntry[];
   publicKey?: QuestionnaireBlindPublicKey | null;
-}) {
+}): Promise<Map<string, QuestionnaireBlindProofVerdict>> {
   const publicKey = input.publicKey ?? null;
-  if (!publicKey) {
-    return new Set<string>();
+  const verdicts = new Map<string, QuestionnaireBlindProofVerdict>();
+  const component: QuestionnaireBlindProofVerdict["component"] = "questionnaire_blind_token_proof";
+
+  for (const entry of input.entries) {
+    const responseId = entry.response.responseId.trim();
+    if (!responseId) {
+      continue;
+    }
+    if (!publicKey) {
+      verdicts.set(responseId, {
+        verdict: "unknown",
+        reason: "definition_blind_signing_public_key_absent",
+        component,
+      });
+    }
   }
-  const verifiedResponseIds = new Set<string>();
+
+  if (!publicKey) {
+    return verdicts;
+  }
+
   await Promise.all(input.entries.map(async (entry) => {
     const responseId = entry.response.responseId.trim();
     if (!responseId) {
@@ -612,11 +670,13 @@ export async function verifyQuestionnaireBlindResponseProofs(input: {
       }),
       signature: proof.signature,
     })))).every(Boolean);
-    if (valid) {
-      verifiedResponseIds.add(responseId);
-    }
+    verdicts.set(responseId, {
+      verdict: valid ? "valid" : "invalid",
+      reason: valid ? null : "token_proof_signature_invalid",
+      component,
+    });
   }));
-  return verifiedResponseIds;
+  return verdicts;
 }
 
 export async function fetchQuestionnaireSubmissionDecisions(input: {
@@ -642,10 +702,17 @@ export async function fetchQuestionnaireSubmissionDecisions(input: {
       return parsed?.questionnaireId ?? null;
     },
   })).events;
-  return events
-    .map((event) => ({ event, decision: parseQuestionnaireSubmissionDecisionEvent(event.content) }))
-    .filter((entry) => entry.decision?.questionnaireId === input.questionnaireId)
-    .filter((entry): entry is { event: NostrEvent; decision: QuestionnaireSubmissionDecisionEvent } => Boolean(entry.decision));
+  const decisions: Array<{ event: NostrEvent; decision: QuestionnaireSubmissionDecisionEvent }> = [];
+  for (const event of events) {
+    if (!verifyEvent(event)) {
+      continue;
+    }
+    const decision = parseQuestionnaireSubmissionDecisionEvent(event.content);
+    if (decision?.questionnaireId === input.questionnaireId) {
+      decisions.push({ event, decision });
+    }
+  }
+  return decisions;
 }
 
 export async function fetchQuestionnaireState(input: {

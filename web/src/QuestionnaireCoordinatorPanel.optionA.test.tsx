@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
 import { QUESTIONNAIRE_DEFINITION_KIND } from "./questionnaireNostr";
 
 vi.mock("./questionnaireFlowMode", () => ({
@@ -1446,15 +1446,12 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
       ...makeDefinition({ questionnaireId, title: "Proxy config race", coordinatorNpub }),
       blindSigningPublicKey: toQuestionnaireBlindPublicKey(blindKey),
     };
-    const definitionEvent = {
-      id: "proxy-config-race-definition",
-      pubkey: getPublicKey(coordinatorSecret),
-      created_at: definition.createdAt,
+    const definitionEvent = finalizeEvent({
       kind: QUESTIONNAIRE_DEFINITION_KIND,
+      created_at: definition.createdAt,
       tags: [["q", questionnaireId], ["questionnaire-id", questionnaireId]],
       content: JSON.stringify(definition),
-      sig: "0".repeat(128),
-    };
+    }, coordinatorSecret);
     const election = {
       electionId: questionnaireId,
       title: definition.title,

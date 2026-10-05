@@ -33,7 +33,7 @@ import { buildQuestionnaireDefinitionReference, questionnaireDefinitionEventHash
 import { tryWriteClipboard } from "./clipboard";
 import { uploadQuestionnaireResultPack } from "./questionnaireResultPack";
 import { fetchLatestQuestionnaireDefinitionByCoordinator, fetchQuestionnaireBlindResponses, fetchQuestionnaireProvisionalResponses, fetchQuestionnaireResultSummary } from "./questionnaireTransport";
-import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofs } from "./questionnaireTransport";
+import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofVerdicts, type QuestionnaireBlindProofVerdict } from "./questionnaireTransport";
 import {
   decryptQuestionnaireBlindResponseAnswers,
   parseQuestionnaireBlindResponseEvent,
@@ -176,7 +176,10 @@ type QuestionnaireCoordinatorPanelProps = {
   draftQuestionnaireId?: string;
   canApplyAdmissionsOnPublish?: boolean;
   onAfterPublishQuestionnaire?: (questionnaireId: string) => void | Promise<void>;
+  onDemoPublished?: () => void;
   onResponseDetailsChange?: (responseDetails: QuestionnaireResultsDashboardResponseDetail[]) => void;
+  onOpenObserver?: () => void;
+  demoSetupSignal?: number;
   onReadinessChange?: (items: QuestionnaireReadinessItem[]) => void;
   onPrimaryPublishActionChange?: (action: QuestionnairePrimaryPublishAction) => void;
   primaryPublishActionSignal?: number;
@@ -1590,6 +1593,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
   const questionnaireRelaysInput = props.questionnaireRelaysInput ?? storedDraft.questionnaireRelays ?? "";
   const [useDefaultSetupRelays, setUseDefaultSetupRelays] = useState(() => normalizeQuestionnaireRelays(questionnaireRelaysInput).length === 0);
   const [questions, setQuestions] = useState<QuestionnaireQuestionDraft[]>(storedDraft.questions);
+  const lastDemoSetupSignalRef = useRef(0);
   const [voterGroups, setVoterGroups] = useState<QuestionnaireVoterGroup[]>(storedDraft.voterGroups ?? []);
   const [newVoterGroupLabel, setNewVoterGroupLabel] = useState("");
   const [generalInvitePowEnabled, setGeneralInvitePowEnabled] = useState(storedDraft.generalInvitePowEnabled ?? false);
@@ -1897,6 +1901,19 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
   const selectedQuestionnaireIsKnownPublished = selectedQuestionnaireHasPublishedSignal;
   const publishedDefinition = selectedQuestionnaireIsKnownPublished;
   useEffect(() => {
+    const signal = props.demoSetupSignal ?? 0;
+    if (signal <= 0 || signal === lastDemoSetupSignalRef.current || view !== "build" || publishedDefinition) {
+      return;
+    }
+    lastDemoSetupSignalRef.current = signal;
+    setTitle("Neighbourhood Consultation Demo");
+    setDescription("A short demonstration questionnaire for a neighbourhood consultation.");
+    setQuestions([createYesNoQuestion("q1", "Do you support creating a shared community garden?")]);
+    setCloseTimerEnabled(false);
+    setVoterGroups([]);
+    setStatus("Demo questionnaire ready. Review it, then select Go Live to publish.");
+  }, [props.demoSetupSignal, publishedDefinition, view]);
+  useEffect(() => {
     props.onPublishedDefinitionChange?.(publishedDefinition);
   }, [props.onPublishedDefinitionChange, publishedDefinition]);
   const questionnaireEditorLocked = publishedDefinition;
@@ -2091,7 +2108,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     publicResponseEntries?: QuestionnaireBlindResponseEntry[];
     provisionalResponseEntries?: QuestionnaireProvisionalResponseEntry[];
     publicDecisionEntries?: QuestionnaireSubmissionDecisionEntry[];
-    verifiedResponseIds?: Iterable<string>;
+    proofVerdicts?: Iterable<readonly [string, QuestionnaireBlindProofVerdict]>;
     resultEvents: NostrEvent[];
     diagnostics?: {
       definition: { mode: "filtered" | "kind_only_fallback"; filteredCount: number; kindOnlyCount: number };
@@ -2199,7 +2216,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       const admissions = evaluateQuestionnaireBlindAdmissions({
         entries: publicResponseEntries,
         decisionEntries: publicDecisionEntries,
-        verifiedResponseIds: input.verifiedResponseIds,
+        proofVerdicts: input.proofVerdicts,
         requireVerifiedProofs: true,
       });
       const acceptedFromSubmissions = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({
@@ -2328,7 +2345,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2339,7 +2356,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -2671,7 +2688,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2682,7 +2699,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -3952,6 +3969,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             forceConfigSync: true,
           });
         }
+        props.onDemoPublished?.();
       } else {
         setStatus("Vote publish failed.");
         await refresh();
@@ -4138,14 +4156,14 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             relays: definition.questionnaireRelays ?? questionnaireRelayPublishHints,
           }).catch(() => []),
         ]);
-        const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+        const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
           entries: publicResponses,
           publicKey: definition.blindSigningPublicKey ?? effectiveBlindSigningPublicKey ?? null,
         });
         const admissions = evaluateQuestionnaireBlindAdmissions({
           entries: publicResponses,
           decisionEntries,
-          verifiedResponseIds,
+          proofVerdicts,
           requireVerifiedProofs: true,
         });
         const acceptedResponses = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({
@@ -5151,6 +5169,11 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           coordinatorText={dashboardCoordinatorIdentity.text}
           publishedAtLabel='Published'
           publishedAtTime={activePublishedDefinition?.createdAt ?? null}
+          actions={props.onOpenObserver ? (
+            <UiButton icon='view' className='simple-voter-secondary' onPress={props.onOpenObserver}>
+              Open observer
+            </UiButton>
+          ) : null}
           emptyQuestionSummaryText='No question results yet.'
           emptySelectionText=''
           emptyResponsesText='No submitted responses found for this questionnaire yet.'

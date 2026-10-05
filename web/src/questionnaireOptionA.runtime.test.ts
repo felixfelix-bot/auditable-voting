@@ -1073,7 +1073,7 @@ describe("questionnaireOptionARuntime", () => {
     expect(voter.getSnapshot()?.submissionDecisions?.q2?.accepted).toBe(true);
     expect(coordinator.getAcceptedUniqueCount()).toBe(2);
     expect(Object.keys(coordinator.getSnapshot()?.acceptedNullifiers ?? {})).toHaveLength(2);
-  }, 15000);
+  }, 90000);
 
   it("does not create a second proxy request when the browser coordinator is the issuer", async () => {
     const proxyElectionId = `${electionId}_proxy_credentials`;
@@ -1176,7 +1176,7 @@ describe("questionnaireOptionARuntime", () => {
     ))).toEqual(["yes"]);
     expect(new Set(publicResponses.map((response) => response.tokenNullifier)).size).toBe(1);
     expect(coordinator.getAcceptedUniqueCount()).toBe(1);
-  }, 15000);
+  }, 90000);
 
   it("keeps a received plan when issuer routing is temporarily unavailable", async () => {
     const proxyElectionId = `${electionId}_normal_proxy_credentials`;
@@ -1231,7 +1231,7 @@ describe("questionnaireOptionARuntime", () => {
     expect(blindRequests).toHaveLength(2);
     expect(voter.getSnapshot()?.blindBallotPlan?.issuerNpub).toBe("npub1issuer");
     expect(vi.mocked(publishOptionABlindRequestBundleDm)).toHaveBeenCalled();
-  }, 15000);
+  }, 90000);
 
   it("does not publish a legacy blind request before a referenced definition is loaded", async () => {
     const referencedElectionId = `${electionId}_referenced_definition_wait`;
@@ -1265,7 +1265,7 @@ describe("questionnaireOptionARuntime", () => {
     });
     expect(vi.mocked(publishOptionABlindRequestDm)).not.toHaveBeenCalled();
     expect(vi.mocked(publishOptionABlindRequestBundleDm)).not.toHaveBeenCalled();
-  }, 15000);
+  }, 90000);
 
   it("does not publish a legacy blind request before a public v2 definition is loaded", async () => {
     const referencedElectionId = `${electionId}_public_definition_wait`;
@@ -1293,7 +1293,7 @@ describe("questionnaireOptionARuntime", () => {
     });
     expect(vi.mocked(publishOptionABlindRequestDm)).not.toHaveBeenCalled();
     expect(vi.mocked(publishOptionABlindRequestBundleDm)).not.toHaveBeenCalled();
-  }, 15000);
+  }, 90000);
 
   it("keeps proxy credentials off for normal admitted voters", async () => {
     const normalElectionId = `${electionId}_normal_credentials`;
@@ -1339,7 +1339,7 @@ describe("questionnaireOptionARuntime", () => {
     await voter.requestBlindBallot({ forceResend: true });
 
     expect(Object.keys(voter.getSnapshot()?.blindRequests ?? {})).toEqual(["slot:1:v1"]);
-  }, 15000);
+  }, 90000);
 
   it("uses one scoped credential for questions grouped under the same ballot index", async () => {
     const groupedElectionId = `${electionId}_credential_group`;
@@ -1796,6 +1796,48 @@ describe("questionnaireOptionARuntime", () => {
     expect(coordinator.getSnapshot()?.whitelist[secondNpub]).toBeUndefined();
     expect(coordinator.getPendingAuthorizations().some((entry) => entry.invitedNpub === secondNpub)).toBe(false);
     expect(listBlindRequests(electionId).some((entry) => entry.invitedNpub === secondNpub)).toBe(false);
+  });
+
+  it("issues one blind ballot to each distinct claimant until a shared private invite reaches its limit", async () => {
+    const inviteCode = "shared-private-invite-code";
+    const inviteCodeHash = await hashQuestionnaireInviteCode(inviteCode);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addBearerInviteCode(inviteCodeHash, { maxRedemptions: 2 });
+
+    for (const npub of [otherNpub, "npub1sharedsecondruntime000000000000000000000000000"]) {
+      const voter = new QuestionnaireOptionAVoterRuntime(signer(npub), electionId);
+      voter.setBearerInviteCode(inviteCode);
+      await voter.loginWithSigner(null);
+      await voter.requestBlindBallot();
+      await coordinator.processPendingBlindRequests();
+      voter.refreshIssuanceAndAcceptance();
+      expect(voter.getSnapshot()?.credentialReady).toBe(true);
+    }
+
+    const redeemed = coordinator.getSnapshot()?.bearerInviteCodes[inviteCodeHash];
+    expect(redeemed).toMatchObject({ state: "redeemed", maxRedemptions: 2 });
+    expect(redeemed?.redeemedNpubs).toHaveLength(2);
+
+    const extraVoter = new QuestionnaireOptionAVoterRuntime(
+      signer("npub1sharedthirdruntime0000000000000000000000000000"),
+      electionId,
+    );
+    extraVoter.setBearerInviteCode(inviteCode);
+    await extraVoter.loginWithSigner(null);
+    await extraVoter.requestBlindBallot();
+    await coordinator.processPendingBlindRequests();
+    expect(coordinator.getSnapshot()?.whitelist["npub1sharedthirdruntime0000000000000000000000000000"]).toBeUndefined();
+  });
+
+  it("caps private invite capacity at 10,000 claimants", async () => {
+    const inviteCodeHash = await hashQuestionnaireInviteCode("capped-private-invite-code");
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+
+    const invite = coordinator.addBearerInviteCode(inviteCodeHash, { maxRedemptions: 100_001 });
+
+    expect(invite.maxRedemptions).toBe(10_000);
   });
 
   it("restores a private invite claimant from its whitelist invite-code hash", async () => {

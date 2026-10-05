@@ -66,7 +66,7 @@ This is the practical browser-based flow. The root landing page defaults to **Ob
 ### 3. Organiser invites voters
 
 1. Share the questionnaire link from **Voting** with **Copy link** or **Share**. These actions use the browser/device apps already available; no provider API key or service registration is needed.
-2. Use **Create single-use invite link** in **Voters** when the organiser wants a one-use bearer invite. New links carry the private code only in the URL fragment as `#invite_code=...`; the questionnaire, organiser, relay, ballot-request, credential, and group parameters remain in the query. On entry, the browser accepts either fragment aliases or previously issued query-string aliases, then immediately scrubs `invite_code` and `code` from both locations and retains the normalised code only in the current history entry, not local storage or backups. Each invite appears in **Participants** with an internal note, voter status, vote/result status for the selected questionnaire, QR code, and actions. **Mark as used** records manual use and makes an unclaimed link unavailable; clearing it makes the unclaimed link available again. Voter status shows whether the link has been claimed, a ballot has been sent, a vote has been submitted, or the organiser has manually marked it as used. The voter looks up organiser and audit-proxy routing from the public questionnaire metadata on Nostr, then automatically requests a ballot.
+2. Use **Create private invite link** in **Voters** when the organiser wants a bearer invite. Set its capacity from 1 to 10,000 distinct voters; each successful claimant receives independent blind credentials. New links carry the private code only in the URL fragment as `#invite_code=...`; the questionnaire, organiser, relay, ballot-request, credential, and group parameters remain in the query. On entry, the browser accepts either fragment aliases or previously issued query-string aliases, then immediately scrubs `invite_code` and `code` from both locations and retains the normalised code only in the current history entry, not local storage or backups. Each invite appears in **Participants** with an internal note, voter status, vote/result status for the selected questionnaire, QR code, and actions. **Mark as used** records manual use and makes an unclaimed link unavailable; clearing it makes the unclaimed link available again. Voter status shows whether the link has been claimed, a ballot has been sent, a vote has been submitted, or the organiser has manually marked it as used. The voter looks up organiser and audit-proxy routing from the public questionnaire metadata on Nostr, then automatically requests a ballot.
 3. Add or import voter `npub`s in **Voters** when you want to invite voters once and reuse that eligibility for later questionnaires from the same organiser. Each invited voter can have an internal note, and remains eligible for later questionnaires until removed. Click **Apply to current questionnaire** to project the roster into the active questionnaire whitelist and publish one roster-free public questionnaire announcement. After one questionnaire is published, **Add session** appears under **Questionnaire**, creates a fresh questionnaire ID from the current setup, and offers only **Publish to invited voters**, which publishes and projects the roster in one flow. The roster is organiser-local; it is not published and is not a reusable ballot credential.
 4. Use **Copy personalised link** beside an invited/whitelisted voter when the link should carry that invited voter `npub`. The voter must still sign in as that `npub`; the personalised URL reveals the invitee `npub` to whoever sees the link.
 5. Send Nostr invite DMs with **Invite** beside each Nostr invite voter. Voters who claimed a private link stay in the private invite cards and are not repeated in the Nostr invite action list.
@@ -455,16 +455,31 @@ If done correctly, the organiser signs *something valid* without learning the fi
 
 ## 11. Threshold Model
 
-The target direction is a threshold model:
+The protocol supports multi-organiser (multi-coordinator) share thresholds:
+multiple organisers may each issue their own blinded share, and a ballot
+token is only derived once the voter holds enough valid shares.
 
-- multiple organisers may issue shares
-- the voter needs enough valid shares to vote
+**Shipped default: single coordinator (`t = 1`).** The live implementation
+runs single-coordinator rounds: one valid share from the round's coordinator
+is enough to derive a ballot token. This keeps shipped behaviour identical
+to earlier releases and leaves legacy single-coordinator rounds working
+unchanged.
 
-Example:
+**Multi-coordinator capability (`t >= 2`): implemented and tested, not yet
+enabled.** The shard-derivation layer accepts an explicit threshold option.
+When a threshold of 2 (or more) is requested, a ballot token is derived only
+once that many **distinct** coordinators have each contributed a valid
+share — a single compromised coordinator cannot satisfy `t >= 2` on its own,
+because it would need `t - 1` other coordinators to co-sign. This path is
+exercised by the test suite (see `simpleShardCertificate.test.ts`), but no
+production caller requests a threshold above 1 yet, so enforcing `t >= 2` in
+the live product remains a future enablement.
+
+Example (illustrates the multi-coordinator capability):
 
 - 3 organisers exist
 - threshold is 2-of-3
-- any 2 valid shares are enough
+- any 2 valid shares from 2 distinct organisers are enough
 
 ```mermaid
 flowchart LR
@@ -486,7 +501,18 @@ Shares must be checked against:
 
 - the round’s authorised organiser roster
 - the round’s blind key announcements
-- the threshold rule for that round
+- the round’s threshold rule — today a single coordinator (`t = 1`) is
+  required; `t >= 2` is supported and tested but not yet enforced
+
+### Per-signer independent admission
+
+Because the multi-coordinator model relies on independent signers, every
+organiser runs its **own admission list** (its masterlist / known-voter
+set) and must **independently** verify that a requesting voter is admitted
+before issuing a share. No organiser can vouch for another's admission
+decision. This matters once `t >= 2` is enabled: a corrupt coordinator could
+then mint a ballot only if it could find `threshold - 1` other coordinators
+willing to sign for a voter those coordinators have not admitted.
 
 ---
 
@@ -789,7 +815,7 @@ The questionnaire runtime currently provides:
 
 - signer-based login entry points in voter/organiser questionnaire headers
 - organiser admission roster, per-questionnaire whitelist projection, roster-free public questionnaire announcements, and invite actions
-- organiser public-link sharing through copy and the native browser share sheet without API keys or external service accounts, plus one-use private code links with per-code share controls, per-invited-voter personalised links carrying legacy `coordinator` and `invited` URL parameters, and roster-free public announcements for repeated questionnaire sessions
+- organiser public-link sharing through copy and the native browser share sheet without API keys or external service accounts, plus bounded-capacity private code links with per-code share controls, per-invited-voter personalised links carrying legacy `coordinator` and `invited` URL parameters, and roster-free public announcements for repeated questionnaire sessions
 - invite delivery over NIP-17 gift-wrapped DMs (`kind 1059` with `kind 13` seal / `kind 14` rumor), with bounded recent relay-history invite discovery on manual voter checks
 - published questionnaire definitions that include the blind-signing public key and any non-default questionnaire relay hints, plus local definition caching and pointer-only invites, so voters can render linked questionnaires, prefer the organiser-selected relay set, and request ballots even when the signer cannot read historical invite DMs
 - public-definition refreshes that do not clear drafted response fields

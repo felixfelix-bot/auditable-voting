@@ -27,7 +27,7 @@ import {
 } from "../src/questionnaireResponsePublish";
 import {
   evaluateQuestionnaireBlindAdmissions,
-  verifyQuestionnaireBlindResponseProofs,
+  verifyQuestionnaireBlindResponseProofVerdicts,
 } from "../src/questionnaireTransport";
 
 const webcrypto = nodeCrypto.webcrypto as unknown as Crypto;
@@ -297,20 +297,24 @@ async function main() {
   const nullifiers = new Set(entries.map((entry) => entry.tokenNullifier));
   assert.equal(nullifiers.size, expectedSubmissionCount, "each per-question submission should have a unique nullifier");
 
-  const verifiedResponseIds = publicKey
+  const proofVerdicts = publicKey
     ? await (async () => {
       process.stdout.write(`Verifying ${expectedSubmissionCount} scoped token proof(s)...\n`);
-      return await verifyQuestionnaireBlindResponseProofs({
+      return await verifyQuestionnaireBlindResponseProofVerdicts({
         entries,
         publicKey,
       });
     })()
-    : new Set(entries.map((entry) => entry.response.responseId));
-  assert.equal(verifiedResponseIds.size, expectedSubmissionCount, "every per-question proof should verify");
+    : await verifyQuestionnaireBlindResponseProofVerdicts({
+        entries,
+        publicKey: null,
+      });
+  const validCount = [...proofVerdicts.values()].filter((v) => v.verdict === "valid").length;
+  assert.equal(validCount, expectedSubmissionCount, "every per-question proof should verify");
 
   const admissions = evaluateQuestionnaireBlindAdmissions({
     entries,
-    verifiedResponseIds,
+    proofVerdicts,
   });
   assert.equal(admissions.accepted.length, expectedSubmissionCount);
   assert.equal(admissions.rejected.length, 0);
@@ -344,9 +348,9 @@ async function main() {
         response: duplicateResponse,
       },
     ],
-    verifiedResponseIds: [
-      duplicateSource.response.responseId,
-      duplicateResponse.responseId,
+    proofVerdicts: [
+      [duplicateSource.response.responseId, { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      [duplicateResponse.responseId, { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
     ],
   });
   assert.equal(duplicateAdmissions.accepted.length, 1);
@@ -356,7 +360,7 @@ async function main() {
   const elapsedMs = Date.now() - startedAt;
   process.stdout.write(`Accepted submissions: ${admissions.accepted.length}\n`);
   process.stdout.write(`Rejected submissions: ${admissions.rejected.length}\n`);
-  process.stdout.write(`Verified proofs: ${verifiedResponseIds.size}\n`);
+  process.stdout.write(`Verified proofs: ${validCount}\n`);
   process.stdout.write(`Unique nullifiers: ${nullifiers.size}\n`);
   process.stdout.write(`Per-question accepted count: ${voterCount} each\n`);
   process.stdout.write(`Duplicate nullifier probe: rejected\n`);

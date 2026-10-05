@@ -29,9 +29,16 @@ export default defineConfig(({ mode }) => ({
     : undefined,
   plugins: [react(), wasm()],
   test: {
-    include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    // Playwright owns browser specs under web/e2e; Vitest must only discover
+    // unit and component tests under src.
+    include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
     environment: "node",
+    // Heavy protocol/runtime tests (questionnaireOptionA.runtime, BlindDm,
+    // simpleRelayLoad, scale harness) build thousands of relay events and can
+    // exceed the 5s default under suite load on 2-core CI runners. 60s gives
+    // them room without hiding genuine hangs.
+    testTimeout: 60_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

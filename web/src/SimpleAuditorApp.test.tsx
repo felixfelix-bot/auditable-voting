@@ -14,7 +14,7 @@ const transportMocks = vi.hoisted(() => ({
   fetchQuestionnaireProvisionalResponses: vi.fn(),
   fetchQuestionnaireSubmissionDecisions: vi.fn(),
   fetchQuestionnaireWorkerDelegationStatus: vi.fn(),
-  verifyQuestionnaireBlindResponseProofs: vi.fn(),
+  verifyQuestionnaireBlindResponseProofVerdicts: vi.fn(),
 }));
 
 vi.mock("./questionnaireTransport", async (importOriginal) => {
@@ -29,7 +29,7 @@ vi.mock("./questionnaireTransport", async (importOriginal) => {
     fetchQuestionnaireProvisionalResponses: transportMocks.fetchQuestionnaireProvisionalResponses,
     fetchQuestionnaireSubmissionDecisions: transportMocks.fetchQuestionnaireSubmissionDecisions,
     fetchQuestionnaireWorkerDelegationStatus: transportMocks.fetchQuestionnaireWorkerDelegationStatus,
-    verifyQuestionnaireBlindResponseProofs: transportMocks.verifyQuestionnaireBlindResponseProofs,
+    verifyQuestionnaireBlindResponseProofVerdicts: transportMocks.verifyQuestionnaireBlindResponseProofVerdicts,
   };
 });
 
@@ -116,13 +116,13 @@ describe("SimpleAuditorApp", () => {
       makeResponseEntry(input.questionnaireId, "2"),
       makeResponseEntry(input.questionnaireId, "3"),
     ]);
-    transportMocks.verifyQuestionnaireBlindResponseProofs.mockImplementation(async () => new Set([
-      "submission_q_first_1",
-      "submission_q_first_2",
-      "submission_q_first_3",
-      "submission_q_second_1",
-      "submission_q_second_2",
-      "submission_q_second_3",
+    transportMocks.verifyQuestionnaireBlindResponseProofVerdicts.mockImplementation(async () => new Map([
+      ["submission_q_first_1", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      ["submission_q_first_2", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      ["submission_q_first_3", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      ["submission_q_second_1", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      ["submission_q_second_2", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
+      ["submission_q_second_3", { verdict: "valid" as const, reason: null, component: "questionnaire_blind_token_proof" as const }],
     ]));
     const { default: SimpleAuditorApp } = await import("./SimpleAuditorApp");
 
@@ -257,7 +257,7 @@ describe("SimpleAuditorApp", () => {
     await user.selectOptions(history, "definition_revision");
     await waitFor(() => {
       expect(screen.getByText("Revision 3-question questionnaire")).toBeTruthy();
-      expect(transportMocks.verifyQuestionnaireBlindResponseProofs).toHaveBeenLastCalledWith(
+      expect(transportMocks.verifyQuestionnaireBlindResponseProofVerdicts).toHaveBeenLastCalledWith(
         expect.objectContaining({ publicKey: revision.definition.blindSigningPublicKey }),
       );
     });
@@ -266,7 +266,7 @@ describe("SimpleAuditorApp", () => {
     await user.selectOptions(history, "definition_original");
     await waitFor(() => {
       expect(screen.getByText("Original 20-question questionnaire")).toBeTruthy();
-      expect(transportMocks.verifyQuestionnaireBlindResponseProofs).toHaveBeenLastCalledWith(
+      expect(transportMocks.verifyQuestionnaireBlindResponseProofVerdicts).toHaveBeenLastCalledWith(
         expect.objectContaining({ publicKey: original.definition.blindSigningPublicKey }),
       );
     });
@@ -428,8 +428,8 @@ function setupTransportMocks() {
   transportMocks.fetchQuestionnaireSubmissionDecisions.mockResolvedValue([]);
   transportMocks.fetchQuestionnaireWorkerDelegationStatus.mockReset();
   transportMocks.fetchQuestionnaireWorkerDelegationStatus.mockResolvedValue(null);
-  transportMocks.verifyQuestionnaireBlindResponseProofs.mockReset();
-  transportMocks.verifyQuestionnaireBlindResponseProofs.mockResolvedValue(new Set<string>());
+  transportMocks.verifyQuestionnaireBlindResponseProofVerdicts.mockReset();
+  transportMocks.verifyQuestionnaireBlindResponseProofVerdicts.mockResolvedValue(new Map());
 }
 
 function makeDefinitionEntry(questionnaireId: string, title: string, createdAt: number): {

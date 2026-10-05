@@ -6060,6 +6060,90 @@ code {
   text-decoration: underline;
 }
 
+/* Human-readable results (default presentation): plain counts + demographic breakdown. */
+.simple-human-results {
+  margin: 4px 22px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--simple-border);
+  border-radius: 12px;
+  background: var(--simple-surface-2);
+}
+
+.simple-human-results-counts {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--simple-text);
+}
+
+.simple-human-results-counts strong {
+  font-weight: 800;
+}
+
+.simple-human-results-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.simple-human-results-question {
+  margin: 0;
+}
+
+.simple-human-results-question-prompt {
+  margin: 0 0 4px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--simple-muted);
+}
+
+.simple-human-results-question-entries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.simple-human-results-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 0.86rem;
+  color: var(--simple-text);
+}
+
+.simple-human-results-entry strong {
+  font-weight: 700;
+}
+
+.simple-human-results-entry-percent {
+  color: var(--simple-muted);
+  font-size: 0.78rem;
+}
+
+.simple-human-results-entry-single {
+  font-size: 0.86rem;
+  color: var(--simple-muted);
+}
+
+/* Verification pack (auditor link): result hash + raw CSV pack. */
+.simple-verification-pack {
+  padding: 14px 22px;
+}
+
+.simple-verification-pack .simple-voter-note {
+  margin: 0 0 14px;
+}
+
+.simple-verification-pack-hash {
+  margin: 0 0 14px;
+}
+
+.simple-verification-pack-hash .simple-auditor-copy-value {
+  margin-top: 6px;
+}
+
 .simple-auditor-summary-island .simple-voter-note {
   color: var(--simple-teal);
   font-size: 0.82rem;
@@ -7244,15 +7328,74 @@ code {
 
 .simple-private-invite-section-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.45fr);
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 0.4fr) minmax(120px, 0.3fr);
   align-items: center;
   gap: 10px;
+}
+
+.simple-private-invite-capacity {
+  display: grid;
+  gap: 4px;
+  color: var(--simple-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .simple-private-invite-action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.simple-organiser-demo-launcher {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 12px;
+}
+
+.simple-resident-import-preview {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--simple-border);
+  border-radius: 12px;
+  background: var(--simple-surface-2);
+}
+
+.organiser-demo-tour-dialog {
+  border: 1px solid var(--simple-border-strong) !important;
+  border-radius: 14px !important;
+  background: var(--simple-surface) !important;
+  color: var(--simple-text) !important;
+  box-shadow: var(--simple-shadow) !important;
+}
+
+.organiser-demo-tour-dialog * {
+  font-family: inherit !important;
+}
+
+.organiser-demo-tour-backdrop {
+  background: rgba(0, 0, 0, 0.72) !important;
+}
+
+.organiser-demo-tour-skip {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--simple-muted);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .simple-organiser-demo-launcher {
+    justify-content: stretch;
+  }
+
+  .simple-organiser-demo-launcher > button {
+    width: 100%;
+  }
 }
 
 .simple-private-invite-action-grid .av-ui-button {

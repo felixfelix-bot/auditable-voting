@@ -12,7 +12,7 @@ import {
   fetchQuestionnaireSubmissionDecisions,
   fetchQuestionnaireResultSummary,
   fetchQuestionnaireState,
-  verifyQuestionnaireBlindResponseProofs,
+  verifyQuestionnaireBlindResponseProofVerdicts,
   type QuestionnaireWorkerDelegationStatus,
 } from "./questionnaireTransport";
 import {
@@ -563,14 +563,14 @@ export default function SimpleAuditorApp({
             previous === resolvedDefinitionEntry.event.id ? previous : resolvedDefinitionEntry.event.id
           ));
         }
-        const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+        const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
          entries: responseEntries,
          publicKey: resolvedDefinition?.blindSigningPublicKey ?? null,
       });
       const admissions = evaluateQuestionnaireBlindAdmissions({
         entries: responseEntries,
         decisionEntries,
-        verifiedResponseIds,
+        proofVerdicts,
         requireVerifiedProofs: true,
       });
       const latestState = [...stateEntries]
@@ -1223,6 +1223,7 @@ export default function SimpleAuditorApp({
             questions: selectedQuestionnaire.questions,
           } : null}
           questionSummaries={displayedQuestionSummaries}
+          resultHash={selectedResultSummary?.resultHash ?? null}
           responseDetails={displayResponseDetails}
           provisionalResponseDetails={selectedProvisionalResponseDetails}
           displayValidCount={displayValidCount}
