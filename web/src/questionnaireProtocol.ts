@@ -1,10 +1,14 @@
 import {
   QUESTIONNAIRE_FLOW_MODE_LEGACY_PRIVATE_DM,
   QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
+  QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS,
   QUESTIONNAIRE_PROTOCOL_VERSION_V1,
+  QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+  QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED,
   QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN,
   QUESTIONNAIRE_RESPONSE_MODE_LEGACY_PRIVATE_ENVELOPE,
   type QuestionnaireFlowMode,
+  type QuestionnairePublicationMode,
   type QuestionnaireResponseMode,
 } from "./questionnaireProtocolConstants";
 import type { QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
@@ -177,6 +181,15 @@ export type QuestionnaireDefinition = {
   eligibilityMode: "open" | "allowlist";
   /** Leading zero SHA-256 bits required for general blind-ballot requests. */
   generalInvitePowDifficulty?: number;
+  /**
+   * How public blind-token submissions are published.
+   * - `immediate` (default): published as soon as the voter submits.
+   * - `windowed`: held locally and released once at `closeAt`, then accepted
+   *   until `closeAt + finalizationGraceSeconds`.
+   */
+  publicationMode?: QuestionnairePublicationMode;
+  /** Seconds after `closeAt` during which late windowed releases are still valid. */
+  finalizationGraceSeconds?: number;
   allowMultipleResponsesPerPubkey: boolean;
   ballotCredentialMode?: QuestionnaireBallotCredentialMode;
   credentialsPerVoter?: QuestionnaireCredentialsPerVoter;
@@ -374,6 +387,12 @@ export type QuestionnaireResultSummary = {
   eventType: "questionnaire_result_summary";
   questionnaireId: string;
   createdAt: number;
+  /**
+   * Signed event timestamp (event.created_at), set by the parser on read so the
+   * premature guard can rely on a non-forgeable clock. Deliberately NOT a
+   * serialised field of the published content.
+   */
+  eventCreatedAt?: number;
   coordinatorPubkey: string;
   acceptedResponseCount: number;
   rejectedResponseCount: number;
@@ -448,8 +467,186 @@ export function questionnaireUsesPerQuestionCredentials(definition: Pick<Questio
   return definition?.ballotCredentialMode === "per_question";
 }
 
+/**
+ * True when public blind-token submissions for this questionnaire are held and
+ * released in a single slot at `closeAt` rather than published on submit.
+ */
+export function questionnaireIsWindowedPublication(
+  definition: Pick<QuestionnaireDefinition, "publicationMode"> | null | undefined,
+): boolean {
+  return definition?.publicationMode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED;
+}
+
+/** Unix seconds at which windowed submissions are released. */
+export function questionnaireReleaseAt(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt"> | null | undefined,
+): number | null {
+  if (!definition || !questionnaireIsWindowedPublication(definition)) {
+    return null;
+  }
+  return Number.isFinite(definition.closeAt) ? definition.closeAt : null;
+}
+
+/** Unix seconds after which a windowed release is no longer accepted. */
+export function questionnaireGraceUntil(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): number | null {
+  const releaseAt = questionnaireReleaseAt(definition);
+  if (releaseAt === null) {
+    return null;
+  }
+  const grace = definition?.finalizationGraceSeconds;
+  return releaseAt + (Number.isFinite(grace) && (grace as number) > 0 ? (grace as number) : 0);
+}
+
+/**
+ * Snapshot of the release policy persisted into voter-local state (A6).
+ *
+ * The shared definition cache can be evicted between the vote and the release.
+ * Without a local copy of the mode an evicted cache looks like "no window at
+ * all" and the ballot is published immediately with its real submission time,
+ * which is precisely the timing leak windowed publication exists to prevent.
+ */
+export type QuestionnairePublicationPolicy = {
+  publicationMode: QuestionnairePublicationMode;
+  /** Positive grace in seconds; null when the policy is malformed (fail closed). */
+  finalizationGraceSeconds: number | null;
+  closeAt: number;
+};
+
+function normaliseQuestionnaireGraceSeconds(value: unknown): number | null {
+  return Number.isFinite(value) && (value as number) > 0 ? Math.floor(value as number) : null;
+}
+
+/** Builds the persistable policy snapshot from a definition. */
+export function questionnairePublicationPolicyFromDefinition(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): QuestionnairePublicationPolicy | null {
+  if (!definition || !Number.isFinite(definition.closeAt)) {
+    // No definition (cache evicted) or no closeAt: we genuinely cannot tell the
+    // mode, so the caller must fail closed (A6) rather than publish immediately.
+    return null;
+  }
+  const mode = definition.publicationMode;
+  // A missing / undefined mode is the historical default and means "immediate":
+  // the round was never declared windowed, so releasing right away is correct.
+  // Only a windowed mode needs the fail-closed guard.
+  if (mode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return {
+      publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED,
+      finalizationGraceSeconds: normaliseQuestionnaireGraceSeconds(definition.finalizationGraceSeconds),
+      closeAt: Math.floor(definition.closeAt),
+    };
+  }
+  if (mode !== undefined && mode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE) {
+    // An explicit, unrecognised mode (e.g. a future format) must not be silently
+    // downgraded to immediate publication.
+    return null;
+  }
+  return {
+    publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+    finalizationGraceSeconds: null,
+    closeAt: Math.floor(definition.closeAt),
+  };
+}
+
+/** Validates an untrusted persisted policy snapshot; null means "unknown, fail closed". */
+export function normaliseQuestionnairePublicationPolicy(value: unknown): QuestionnairePublicationPolicy | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as {
+    publicationMode?: unknown;
+    finalizationGraceSeconds?: unknown;
+    closeAt?: unknown;
+  };
+  const mode = candidate.publicationMode;
+  if (mode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE && mode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return null;
+  }
+  if (!Number.isFinite(candidate.closeAt)) {
+    return null;
+  }
+  return {
+    publicationMode: mode,
+    finalizationGraceSeconds: mode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED
+      ? normaliseQuestionnaireGraceSeconds(candidate.finalizationGraceSeconds)
+      : null,
+    closeAt: Math.floor(candidate.closeAt as number),
+  };
+}
+
+/** Policy-level twin of questionnaireReleaseAt. */
+export function questionnairePublicationPolicyReleaseAt(
+  policy: Pick<QuestionnairePublicationPolicy, "publicationMode" | "closeAt"> | null | undefined,
+): number | null {
+  if (!policy || policy.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    return null;
+  }
+  return Number.isFinite(policy.closeAt) ? Math.floor(policy.closeAt) : null;
+}
+
+/**
+ * Policy-level twin of questionnaireGraceUntil. Returns null when the grace is
+ * missing or non-positive so callers can fail closed instead of degrading a
+ * windowed round into an immediate publication (A3).
+ */
+export function questionnairePublicationPolicyGraceUntil(
+  policy: QuestionnairePublicationPolicy | null | undefined,
+): number | null {
+  const releaseAt = questionnairePublicationPolicyReleaseAt(policy);
+  if (releaseAt === null) {
+    return null;
+  }
+  const grace = policy?.finalizationGraceSeconds;
+  return Number.isFinite(grace) && (grace as number) > 0 ? releaseAt + Math.floor(grace as number) : null;
+}
+
+/**
+ * Timestamp a public blind-token submission should carry. Windowed rounds use
+ * the shared release slot so the public record does not reveal per-voter
+ * submission time; immediate rounds use the supplied wall-clock time.
+ */
+export function questionnaireSubmissionTimestamp(
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt"> | null | undefined,
+  nowSeconds: number,
+): number {
+  return questionnaireReleaseAt(definition) ?? nowSeconds;
+}
+
 export function questionnaireCredentialsPerVoter(definition: Pick<QuestionnaireDefinition, "credentialsPerVoter"> | null | undefined): QuestionnaireCredentialsPerVoter {
   return normaliseQuestionnaireCredentialsPerVoter(definition?.credentialsPerVoter);
+}
+
+/**
+ * True when a published result summary was signed before the windowed
+ * finalization grace elapsed, i.e. it may have missed late releases.
+ */
+export function questionnaireResultSummaryIsPremature(
+  summary: Pick<QuestionnaireResultSummary, "createdAt" | "eventCreatedAt"> | null | undefined,
+  definition: Pick<QuestionnaireDefinition, "publicationMode" | "closeAt" | "finalizationGraceSeconds"> | null | undefined,
+): boolean {
+  if (!summary) {
+    return false;
+  }
+  const allowedAt = questionnaireGraceUntil(definition);
+  if (allowedAt === null) {
+    return false;
+  }
+  // A4: trust the SIGNED event timestamp when present, and fail closed by using
+  // min(signed, content). max() would let a forged future createdAt in the
+  // content win and prematurely surface a summary as final; min keeps the
+  // earliest honest clock, so a forged future value cannot fail open.
+  const contentAt = typeof summary.createdAt === "number" && Number.isFinite(summary.createdAt)
+    ? summary.createdAt
+    : null;
+  const signedAt = typeof summary.eventCreatedAt === "number" && Number.isFinite(summary.eventCreatedAt)
+    ? summary.eventCreatedAt
+    : null;
+  const earliest = signedAt !== null && contentAt !== null
+    ? Math.min(signedAt, contentAt)
+    : (signedAt ?? contentAt);
+  return earliest !== null && earliest < allowedAt;
 }
 
 export function normaliseQuestionnaireCredentialsPerVoter(value: unknown): QuestionnaireCredentialsPerVoter {
@@ -568,6 +765,25 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
       || input.generalInvitePowDifficulty > 24)
   ) {
     errors.push("general_invite_pow_difficulty_invalid");
+  }
+  if (
+    input.publicationMode !== undefined
+    && input.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE
+    && input.publicationMode !== QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED
+  ) {
+    errors.push("publication_mode_invalid");
+  }
+  if (input.publicationMode === QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED) {
+    if (
+      input.finalizationGraceSeconds === undefined
+      || !Number.isInteger(input.finalizationGraceSeconds)
+      || input.finalizationGraceSeconds <= 0
+      || input.finalizationGraceSeconds > QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS
+    ) {
+      errors.push("finalization_grace_seconds_invalid");
+    }
+  } else if (input.finalizationGraceSeconds !== undefined) {
+    errors.push("finalization_grace_seconds_unexpected");
   }
   if (
     input.responseMode !== QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN

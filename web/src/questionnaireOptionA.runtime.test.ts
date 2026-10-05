@@ -13,9 +13,11 @@ import {
   listBlindRequests,
   loadCoordinatorState,
   loadElectionSummary,
+  loadVoterState,
   readAcceptance,
   readBlindIssuance,
   saveCoordinatorState,
+  saveVoterState,
   storeAcceptance,
   storeBlindIssuance,
   upsertElectionSummary,
@@ -24,6 +26,8 @@ import {
   fetchOptionABallotSubmissionDmsWithNsec,
   fetchOptionABlindIssuanceAckDms,
   fetchOptionAParticipantStatusDms,
+  fetchOptionAVoterStateDms,
+  fetchOptionAVoterStateDmsWithNsec,
   publishOptionABallotAcceptanceDm,
   publishOptionABallotSubmissionDm,
   publishOptionABlindIssuanceBundleDm,
@@ -122,6 +126,8 @@ vi.mock("./questionnaireOptionABlindDm", () => ({
   fetchOptionABlindRequestDmsWithNsec: vi.fn().mockResolvedValue([]),
   fetchOptionAParticipantStatusDms: vi.fn().mockResolvedValue([]),
   fetchOptionAParticipantStatusDmsWithNsec: vi.fn().mockResolvedValue([]),
+  fetchOptionAVoterStateDms: vi.fn().mockResolvedValue([]),
+  fetchOptionAVoterStateDmsWithNsec: vi.fn().mockResolvedValue([]),
   publishOptionABallotAcceptanceDm: vi.fn().mockResolvedValue({
     eventId: "mock-option-a-acceptance-dm",
     successes: 1,
@@ -652,6 +658,19 @@ async function processDelegatedCoordinatorQueues(input: {
   return next;
 }
 
+
+/**
+ * Removes only the shared questionnaire definition cache (A6). Voter state lives
+ * under separate keys, so windowed decisions must survive this eviction.
+ */
+function evictQuestionnaireDefinitionCache() {
+  for (const key of Object.keys(window.localStorage)) {
+    if (key.includes("questionnaire:definitions:v1")) {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
 describe("questionnaireOptionARuntime", () => {
   const electionId = "election_runtime_1";
   const coordinatorNpub = "npub1coordinatorruntime0000000000000000000000000000";
@@ -835,6 +854,7 @@ describe("questionnaireOptionARuntime", () => {
   it("runs request -> issuance -> submit -> acceptance and supports resume", async () => {
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const sentInvite = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -903,6 +923,7 @@ describe("questionnaireOptionARuntime", () => {
     const retryElectionId = `${electionId}_scoped_republish`;
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), retryElectionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId: retryElectionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const { invite } = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -1690,6 +1711,7 @@ describe("questionnaireOptionARuntime", () => {
   it("prevents duplicate issuance and duplicate accepted submissions from inflating unique count", async () => {
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addWhitelistNpub(voterNpub);
     const sentInvite = await coordinator.sendInvite(voterNpub, {
       title: "Runtime",
@@ -1874,6 +1896,7 @@ describe("questionnaireOptionARuntime", () => {
     const groupVoterNpub = "npub1privategroupcoderuntime0000000000000000000000000000";
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
     await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition(buildDefinition({ electionId, coordinatorNpub }));
     coordinator.addBearerInviteCode(inviteCodeHash, { ballotGroup: "group_north" });
 
     const voter = new QuestionnaireOptionAVoterRuntime(signer(groupVoterNpub), electionId);
@@ -2836,6 +2859,411 @@ describe("questionnaireOptionARuntime", () => {
     expect(coordinator.getSnapshot()?.whitelist[voterNpub]?.claimState).toBe("whitelisted");
     expect(coordinator.getPendingAuthorizations()).toEqual([]);
   });
+  function setUpWindowedElection(windowedId: string) {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition({ electionId: windowedId, coordinatorNpub }),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3600,
+    };
+    storeCachedQuestionnaireDefinition(definition);
+    return definition;
+  }
+
+  it("persists the publication mode into voter state so it outlives the definition cache (A6)", async () => {
+    const windowedId = `${electionId}_a6_mode`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+
+    expect(loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub })?.publicationPolicy).toEqual({
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3600,
+      closeAt: definition.closeAt,
+    });
+  });
+
+  it("keeps windowed publication when the definition cache is evicted before the vote (A6)", async () => {
+    const windowedId = `${electionId}_a6_evicted`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    expect(voter.getSnapshot()?.credentialReady).toBe(true);
+
+    evictQuestionnaireDefinitionCache();
+    expect(readCachedQuestionnaireDefinition(windowedId)).toBeNull();
+
+    await voter.publishProvisionalResponses(["q1"]);
+    expect(publishQuestionnaireProvisionalResponsePublic).not.toHaveBeenCalled();
+
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(definition.closeAt);
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.graceUntil).toBe(definition.closeAt + 3600);
+  });
+
+  async function setUpWindowedWindowedRound(windowedId: string, closeAt: number, graceSeconds: number) {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition({ electionId: windowedId, coordinatorNpub }),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: graceSeconds,
+      closeAt,
+    };
+    storeCachedQuestionnaireDefinition(definition);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    return { definition, voter };
+  }
+
+  it("rejects a ballot submitted after the windowed grace deadline (A2)", async () => {
+    const windowedId = `${electionId}_a2_past_grace`;
+    const closeAt = Math.floor(Date.now() / 1000) - 4_000;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, closeAt, 3_600);
+
+    await expect(voter.submitVote(["q1"])).rejects.toMatchObject({ code: "release_window_expired" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(Object.keys(voter.getSnapshot()?.pendingPublicReleases ?? {})).toHaveLength(0);
+  });
+
+  it("publishes immediately, stamped to the release slot, once the window has opened (A2)", async () => {
+    const windowedId = `${electionId}_a2_inside_window`;
+    const closeAt = Math.floor(Date.now() / 1000) - 60;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, closeAt, 3_600);
+
+    await voter.submitVote(["q1"]);
+
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: closeAt,
+      submittedAt: closeAt,
+    }));
+    expect(Object.keys(voter.getSnapshot()?.pendingPublicReleases ?? {})).toHaveLength(0);
+  });
+
+  it("freezes the stored submission timestamp to the release slot while queued (A2)", async () => {
+    const windowedId = `${electionId}_a2_frozen_timestamp`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    await voter.submitVote(["q1"]);
+
+    const snapshot = voter.getSnapshot();
+    expect(snapshot?.submission?.submittedAt).toBe(new Date(definition.closeAt * 1000).toISOString());
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
+  it("does not republish a queued windowed submission before its release slot (windowed guard)", async () => {
+    const windowedId = `${electionId}_republish_pre_release`;
+    const releaseAt = Math.floor(Date.now() / 1000) + 3_600;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, releaseAt, 3_600);
+
+    // Queue a windowed submission whose release slot is still in the future.
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(snapshot?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(releaseAt);
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    // A republish attempt before the release slot must be skipped, not leaked out
+    // immediately with the real vote time.
+    await voter.submitVote([]);
+
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+    expect(voter.getSnapshot()?.pendingPublicReleases?.[submissionId]?.releaseAt).toBe(releaseAt);
+  });
+
+  it("republishes a queued windowed submission stamped to the shared release slot, not the real time", async () => {
+    const windowedId = `${electionId}_republish_release_slot`;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const simulatedReleaseAt = nowSeconds - 60; // release slot already opened, grace still open
+    const { voter } = await setUpWindowedWindowedRound(windowedId, nowSeconds + 3_600, 3_600);
+
+    // Queue a windowed submission with a future release slot...
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+
+    // ...then simulate that the release slot has since opened (without the
+    // release machinery having run), so the republish path is the one releasing.
+    (voter as unknown as { state: { pendingPublicReleases: Record<string, { releaseAt: number; graceUntil: number }> } }).state = {
+      ...snapshot!,
+      pendingPublicReleases: {
+        ...snapshot!.pendingPublicReleases!,
+        [submissionId]: {
+          ...snapshot!.pendingPublicReleases![submissionId]!,
+          releaseAt: simulatedReleaseAt,
+          graceUntil: nowSeconds + 3_600,
+        },
+      },
+    };
+
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    await voter.submitVote([]);
+
+    // The republished event must carry the shared release slot, never the real time.
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: simulatedReleaseAt,
+      submittedAt: simulatedReleaseAt,
+    }));
+  });
+
+  it("stamps a republished in-window immediate submission to the release slot, not the real time", async () => {
+    const windowedId = `${electionId}_republish_inwindow_slot`;
+    const closeAt = Math.floor(Date.now() / 1000) - 60;
+    const { voter } = await setUpWindowedWindowedRound(windowedId, closeAt, 3_600);
+
+    // The release slot has already opened, so submitting publishes immediately,
+    // stamped to the shared slot, and creates NO pending release entry (the
+    // in-window immediate path returns before queueing).
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(Object.keys(snapshot?.pendingPublicReleases ?? {})).toHaveLength(0);
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: closeAt,
+      submittedAt: closeAt,
+    }));
+
+    // A later republish attempt must ALSO stamp to the slot. With no pending
+    // release entry present the old guard fell through to a bare publish that
+    // omitted eventCreatedAt, so the signed created_at would be Date.now(),
+    // leaking the real voter time (the exact leak this windowed PR closes).
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    await voter.submitVote([]);
+
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledTimes(1);
+    expect(publishQuestionnaireBlindResponsePublic).toHaveBeenCalledWith(expect.objectContaining({
+      eventCreatedAt: closeAt,
+      submittedAt: closeAt,
+    }));
+  });
+
+  it("does not republish a windowed submission that was already released (releasedAt)", async () => {
+    const windowedId = `${electionId}_republish_released`;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const { voter } = await setUpWindowedWindowedRound(windowedId, nowSeconds + 3_600, 3_600);
+
+    // Queue a windowed submission with a future release slot.
+    await voter.submitVote(["q1"]);
+    const snapshot = voter.getSnapshot();
+    const submissionId = snapshot?.submission?.submissionId ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+
+    // Simulate the slot opening AND the release machinery already having
+    // released this submission (releasedAt set, entry retained until grace).
+    (voter as unknown as { state: { pendingPublicReleases: Record<string, {
+      releaseAt: number;
+      graceUntil: number;
+      releasedAt: string | null;
+    }> } }).state = {
+      ...snapshot!,
+      pendingPublicReleases: {
+        ...snapshot!.pendingPublicReleases!,
+        [submissionId]: {
+          ...snapshot!.pendingPublicReleases![submissionId]!,
+          releaseAt: nowSeconds - 60,
+          graceUntil: nowSeconds + 3_600,
+          releasedAt: new Date(Date.now()).toISOString(),
+        },
+      },
+    };
+
+    vi.mocked(publishQuestionnaireBlindResponsePublic).mockClear();
+    await voter.submitVote([]);
+
+    // An already-released submission must not be pushed to the public feed again.
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds a queued windowed release from the self-state snapshot without persisting the responder nsec (A1)", async () => {
+    const windowedId = `${electionId}_a1_recover_release`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    await voter.submitVote(["q1"]);
+    const submitted = voter.getSnapshot();
+    const submissionId = submitted?.submission?.submissionId ?? "";
+    const originalNsec = submitted?.pendingPublicReleases?.[submissionId]?.responseNsec ?? "";
+    expect(submissionId).toBeTruthy();
+    expect(originalNsec.startsWith("nsec1")).toBe(true);
+
+    // The self-state snapshot that leaves the device must NOT carry the responder
+    // nsec, but it must carry the release metadata so a reload can rebuild it.
+    // The self-copy publish is fire-and-forget, so wait for it to land.
+    type SnapshotCall = { snapshot?: { pendingPublicReleases?: Record<string, Record<string, unknown>> } };
+    const findRestored = () => vi.mocked(publishOptionAVoterStateDm).mock.calls
+      .map((call) => call[0] as SnapshotCall)
+      .reverse()
+      .find((call) => Boolean(call.snapshot?.pendingPublicReleases?.[submissionId]));
+    await vi.waitFor(() => {
+      expect(findRestored()).toBeTruthy();
+    });
+    const restored = findRestored();
+    expect(restored).toBeTruthy();
+    const wireRecord = restored!.snapshot!.pendingPublicReleases![submissionId];
+    expect(wireRecord).not.toHaveProperty("responseNsec");
+    expect(wireRecord.releaseAt).toBe(definition.closeAt);
+
+    // Simulate losing the local pending-release map (reload on a fresh device).
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    const withoutReleases = { ...stored! } as Record<string, unknown>;
+    delete withoutReleases.pendingPublicReleases;
+    saveVoterState({ voterNpub, state: withoutReleases as never });
+
+    const recovered = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await recovered.loginWithSigner(null);
+    expect(recovered.getSnapshot()?.pendingPublicReleases?.[submissionId]).toBeUndefined();
+
+    vi.mocked(fetchOptionAVoterStateDms).mockResolvedValue([restored!.snapshot as never]);
+    await recovered.recoverVoterStateFromSelfDm();
+
+    const rebuilt = recovered.getSnapshot()?.pendingPublicReleases?.[submissionId];
+    expect(rebuilt).toBeTruthy();
+    expect(rebuilt?.releaseAt).toBe(definition.closeAt);
+    expect(rebuilt?.graceUntil).toBe(definition.closeAt + 3600);
+    expect(rebuilt?.responseNsec).toBe(originalNsec);
+  });
+
+  it("fails closed when a windowed policy carries no positive grace (A3)", async () => {
+    const windowedId = `${electionId}_a3_no_grace`;
+    const definition = setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    // A windowed round with no positive grace: the definition cache is gone and
+    // the persisted policy records a null grace (the malformed fail-closed form).
+    evictQuestionnaireDefinitionCache();
+    saveVoterState({
+      voterNpub,
+      state: {
+        ...stored!,
+        publicationPolicy: {
+          publicationMode: "windowed",
+          finalizationGraceSeconds: null,
+          closeAt: definition.closeAt,
+        },
+      },
+    });
+
+    const resumed = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await resumed.loginWithSigner(null);
+    await expect(resumed.submitVote(["q1"])).rejects.toMatchObject({ code: "invalid_publication_mode" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
+  it("fails closed instead of publishing immediately when the publication mode is unknown (A6)", async () => {
+    const windowedId = `${electionId}_a6_unknown`;
+    setUpWindowedElection(windowedId);
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), windowedId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const { invite } = await coordinator.sendInvite(voterNpub, {
+      title: "Runtime",
+      description: "Test",
+      voteUrl: "https://example.org/vote",
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+    await voter.requestBlindBallot({ forceResend: true });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+
+    const stored = loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub });
+    expect(stored).toBeTruthy();
+    // Simulate a device that never learned a release policy: the definition
+    // cache is gone and the persisted state carries no policy at all.
+    evictQuestionnaireDefinitionCache();
+    saveVoterState({ voterNpub, state: { ...stored!, publicationPolicy: null } });
+    expect(loadVoterState({ voterNpub, electionId: windowedId, coordinatorNpub })?.publicationPolicy).toBe(null);
+
+    const resumed = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), windowedId);
+    await resumed.loginWithSigner(null);
+    await expect(resumed.submitVote(["q1"])).rejects.toMatchObject({ code: "invalid_publication_mode" });
+    expect(publishQuestionnaireBlindResponsePublic).not.toHaveBeenCalled();
+  });
+
   it("keeps answers for showIf-hidden questions out of the published payload (B3)", async () => {
     const hiddenElectionId = `${electionId}_hidden_answers`;
     const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), hiddenElectionId);

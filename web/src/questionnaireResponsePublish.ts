@@ -91,6 +91,8 @@ type PublicPublishOptions = {
   minPublishIntervalMs?: number;
   relayStaggerMs?: number;
   publishMaxWaitMs?: number;
+  /** Overrides the signed Nostr `created_at`. Windowed rounds use the release slot. */
+  eventCreatedAt?: number;
 };
 
 function buildPublicRelays(relays?: string[], includeDefaultRelays = true) {
@@ -134,7 +136,7 @@ async function publishEvent(input: {
   const secretKey = decodeNsecSecretKey(input.nsec);
   const event = finalizeEvent({
     kind: QUESTIONNAIRE_RESPONSE_BLIND_KIND,
-    created_at: Math.floor(Date.now() / 1000),
+    created_at: input.eventCreatedAt ?? Math.floor(Date.now() / 1000),
     tags: input.tags,
     content: JSON.stringify(input.eventPayload),
   }, secretKey);
@@ -223,6 +225,7 @@ export async function publishQuestionnaireBlindResponsePublic(input: {
     minPublishIntervalMs: input.minPublishIntervalMs,
     relayStaggerMs: input.relayStaggerMs,
     publishMaxWaitMs: input.publishMaxWaitMs,
+    eventCreatedAt: input.eventCreatedAt,
   });
 }
 

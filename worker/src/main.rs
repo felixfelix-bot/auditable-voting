@@ -6,7 +6,7 @@ use crate::config::WorkerConfig;
 #[cfg(test)]
 use crate::model::IMPLEMENTATION_KIND_QUESTIONNAIRE_DEFINITION;
 use crate::model::{
-    is_expired, now_iso, BearerInviteCodeEntry, BlindBallotIssuance,
+    is_expired, now_iso, unix_now, windowed_grace_deadline, BearerInviteCodeEntry, BlindBallotIssuance,
     BlindBallotIssuanceBundleEnvelope, BlindBallotIssuanceEnvelope, BlindBallotPlan,
     BlindBallotPlanEnvelope, BlindBallotRequest, BlindBallotRequestBundleEnvelope,
     BlindBallotRequestEnvelope, BlindIssuanceAck, BlindIssuanceAckEnvelope, BlindTokenProof,
@@ -1234,6 +1234,15 @@ fn election_has_pending_completion_work(election: &ElectionRuntimeState) -> bool
         || !election.deferred_blind_request_ids.is_empty()
     {
         return false;
+    }
+    if let Some(deadline) = election
+        .definition
+        .as_ref()
+        .and_then(windowed_grace_deadline)
+    {
+        if unix_now() < deadline {
+            return false;
+        }
     }
     let publish_summary = election
         .capabilities
@@ -3784,6 +3793,15 @@ impl WorkerRuntime {
                     let accepted_unique = entry.accepted_response_count;
                     if accepted_unique < expected || !entry.deferred_blind_request_ids.is_empty() {
                         return None;
+                    }
+                    if let Some(deadline) = entry
+                        .definition
+                        .as_ref()
+                        .and_then(windowed_grace_deadline)
+                    {
+                        if unix_now() < deadline {
+                            return None;
+                        }
                     }
                     let close_questionnaire = entry
                         .capabilities

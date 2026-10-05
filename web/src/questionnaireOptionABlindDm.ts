@@ -13,6 +13,7 @@ import {
   sanitiseBlindBallotPlan,
   type BlindBallotRequest,
   type CoordinatorElectionState,
+  type PendingPublicRelease,
   type VoterElectionLocalState,
 } from "./questionnaireOptionA";
 import type {
@@ -218,6 +219,12 @@ export type OptionAVoterStateSnapshot = {
     decidedAt: string;
     reason?: string | null;
   }>;
+  /**
+   * Windowed releases still waiting for their slot (A1). The responder nsec is
+   * deliberately NOT persisted here: it is re-derived from blindTokenSecrets on
+   * recovery so a leaked snapshot cannot expose the responder identity.
+   */
+  pendingPublicReleases?: Record<string, Omit<PendingPublicRelease, "responseNsec">>;
   lastUpdatedAt: string;
 };
 

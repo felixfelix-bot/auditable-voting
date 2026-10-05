@@ -16,7 +16,13 @@ import {
   type VoterElectionLocalState,
   type WhitelistEntry,
 } from "./questionnaireOptionA";
-import { normaliseQuestionnaireBallotGroup } from "./questionnaireProtocol";
+import {
+  normaliseQuestionnaireBallotGroup,
+  normaliseQuestionnairePublicationPolicy,
+  questionnairePublicationPolicyFromDefinition,
+  type QuestionnairePublicationPolicy,
+} from "./questionnaireProtocol";
+import { readCachedQuestionnaireDefinition } from "./questionnaireDefinitionCache";
 import { buildNamespacedLocalStorageKey as buildSimpleNamespacedLocalStorageKey } from "./appStorageNamespace";
 
 function getKey(key: string) {
@@ -453,6 +459,29 @@ export function findCoordinatorBlindSigningPrivateKey(input: {
   return null;
 }
 
+/**
+ * Read only the persisted publication policy for a voter (A6).
+ *
+ * Used as the last-resort fallback when a runtime was built before the policy
+ * was recorded and the shared definition cache has since been evicted.
+ */
+export function readVoterPublicationPolicy(input: {
+  voterNpub: Npub;
+  electionId: string;
+}): QuestionnairePublicationPolicy | null {
+  if (!input.voterNpub || !input.electionId) {
+    return null;
+  }
+  const keys = buildVoterStorageKeys({ npub: input.voterNpub, electionId: input.electionId });
+  const submissionPart = readJson<{
+    publicationPolicy?: unknown;
+  } | BallotSubmission | null>(keys.submission, null);
+  if (!submissionPart || typeof submissionPart !== "object" || "type" in submissionPart) {
+    return null;
+  }
+  return normaliseQuestionnairePublicationPolicy(submissionPart.publicationPolicy);
+}
+
 export function saveVoterState(input: {
   voterNpub: Npub;
   state: VoterElectionLocalState;
@@ -461,6 +490,12 @@ export function saveVoterState(input: {
     npub: input.voterNpub,
     electionId: input.state.electionId,
   });
+  // A6: freeze the release policy while the definition is still cached so a
+  // later cache eviction cannot silently downgrade a windowed round into an
+  // immediate publication (which would leak the real submission time).
+  const publicationPolicy = questionnairePublicationPolicyFromDefinition(
+    readCachedQuestionnaireDefinition(input.state.electionId),
+  ) ?? normaliseQuestionnairePublicationPolicy(input.state.publicationPolicy);
   writeJson(keys.invite, input.state.inviteMessage);
   writeJson(keys.login, {
     loginVerified: input.state.loginVerified,
@@ -485,6 +520,8 @@ export function saveVoterState(input: {
   writeJson(keys.submission, {
     submission: input.state.submission,
     submissions: input.state.submissions ?? {},
+    pendingPublicReleases: input.state.pendingPublicReleases ?? {},
+    publicationPolicy,
     responseNsec: input.state.responseNsec ?? null,
     responseNpub: input.state.responseNpub ?? null,
   });
@@ -553,6 +590,8 @@ export function loadVoterState(input: {
   const submissionPart = readJson<{
     submission?: BallotSubmission | null;
     submissions?: Record<string, BallotSubmission>;
+    pendingPublicReleases?: VoterElectionLocalState["pendingPublicReleases"];
+    publicationPolicy?: unknown;
     responseNsec?: string | null;
     responseNpub?: string | null;
   } | BallotSubmission | null>(keys.submission, null);
@@ -562,6 +601,12 @@ export function loadVoterState(input: {
   const submissions = submissionPart && !("type" in submissionPart)
     ? submissionPart.submissions ?? {}
     : {};
+  const pendingPublicReleases = submissionPart && !("type" in submissionPart)
+    ? submissionPart.pendingPublicReleases ?? {}
+    : {};
+  const publicationPolicy = submissionPart && !("type" in submissionPart)
+    ? normaliseQuestionnairePublicationPolicy(submissionPart.publicationPolicy)
+    : null;
   const acceptance = readJson<{
     submissionAccepted?: boolean | null;
     submissionAcceptedAt?: string | null;
@@ -584,6 +629,7 @@ export function loadVoterState(input: {
     || Object.keys(blindIssuances).length > 0
     || submission
     || Object.keys(submissions).length > 0
+    || Object.keys(pendingPublicReleases).length > 0
     || draftResponses.length > 0
   );
   if (!anyState && !summary) {
@@ -616,6 +662,8 @@ export function loadVoterState(input: {
     draftResponses,
     submission,
     submissions,
+    pendingPublicReleases,
+    publicationPolicy,
     submissionAccepted: acceptance.submissionAccepted ?? null,
     submissionAcceptedAt: acceptance.submissionAcceptedAt ?? null,
     submissionDecisions: acceptance.submissionDecisions ?? {},

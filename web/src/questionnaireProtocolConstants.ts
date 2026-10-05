@@ -25,6 +25,10 @@ export const QUESTIONNAIRE_RESULT_HASH_DOMAIN = "auditable-voting/questionnaire-
 
 export const QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN = "blind_token";
 export const QUESTIONNAIRE_RESPONSE_MODE_LEGACY_PRIVATE_ENVELOPE = "legacy_private_envelope";
+export const QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE = "immediate";
+export const QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED = "windowed";
+/** Upper bound for a published finalization grace period (30 days). */
+export const QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS = 2_592_000;
 export const QUESTIONNAIRE_PROTOCOL_VERSION_V1 = 1;
 export const QUESTIONNAIRE_PROTOCOL_VERSION_V2 = 2;
 export const QUESTIONNAIRE_FLOW_MODE_LEGACY_PRIVATE_DM = "legacy_private_dm";
@@ -33,6 +37,10 @@ export const QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1 = "public_submission_v
 export type QuestionnaireResponseMode =
   | typeof QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN
   | typeof QUESTIONNAIRE_RESPONSE_MODE_LEGACY_PRIVATE_ENVELOPE;
+
+export type QuestionnairePublicationMode =
+  | typeof QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE
+  | typeof QUESTIONNAIRE_PUBLICATION_MODE_WINDOWED;
 
 export type QuestionnaireFlowMode =
   | typeof QUESTIONNAIRE_FLOW_MODE_LEGACY_PRIVATE_DM

@@ -9,6 +9,7 @@ import {
   type QuestionnaireDefinition,
   type QuestionnaireDefinitionReference,
   QuestionnaireResponseAnswer,
+  type QuestionnairePublicationPolicy,
 } from "./questionnaireProtocol";
 import { verifyGeneralInvitePow, type GeneralInvitePowProof } from "./questionnaireGeneralInvitePow";
 import type { QuestionnaireBlindPrivateKey, QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
@@ -271,6 +272,23 @@ export interface BallotSubmission {
   submittedAt: IsoTime;
 }
 
+/**
+ * A windowed round holds each built submission locally and releases it once at
+ * `releaseAt`. The per-submission response key is retained so release survives
+ * a reload; the record is cleared from the pending map once released.
+ */
+export interface PendingPublicRelease {
+  submissionId: SubmissionId;
+  submissionKey?: string | null;
+  responseNsec: string;
+  /** Unix seconds at which the submission may be published. */
+  releaseAt: number;
+  /** Unix seconds after which a pending release is missed and dropped. */
+  graceUntil: number;
+  releasedAt?: IsoTime | null;
+  releasedEventId?: string | null;
+}
+
 export interface BallotAcceptanceResult {
   type: "ballot_acceptance_result";
   schemaVersion: 1;
@@ -317,6 +335,12 @@ export interface VoterElectionLocalState {
   draftResponses: QuestionnaireAnswer[];
   submission?: BallotSubmission | null;
   submissions?: Record<string, BallotSubmission>;
+  pendingPublicReleases?: Record<string, PendingPublicRelease>;
+  /**
+   * Release policy snapshot (A6). Persisted with the voter state so a windowed
+   * round stays windowed even after the shared definition cache is evicted.
+   */
+  publicationPolicy?: QuestionnairePublicationPolicy | null;
   submissionAccepted?: boolean | null;
   submissionAcceptedAt?: IsoTime | null;
   submissionDecisions?: Record<string, {
