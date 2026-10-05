@@ -12,6 +12,7 @@ import SimpleRelayPanel from "./SimpleRelayPanel";
 import SimpleUnlockGate from "./SimpleUnlockGate";
 import TokenFingerprint from "./TokenFingerprint";
 import { extractNpubFromScan } from "./npubScan";
+import ManualBallotEntry, { type ManualBallotIdentity } from "./ManualBallotEntry";
 import {
   primeNip65RelayHints,
   setNip65EnabledForSession,
@@ -105,7 +106,7 @@ import { UiButton, UiSelect, UiSwitch, UiTextField } from "./ui/DesignLayer";
 import type { ElectionInviteMessage } from "./questionnaireOptionA";
 
 type LiveVoteChoice = "Yes" | "No" | null;
-export type VoterTab = "configure" | "vote" | "messages" | "settings";
+export type VoterTab = "configure" | "vote" | "paperBallot" | "messages" | "settings";
 
 type SimpleVoterKeypair = {
   nsec: string;
@@ -522,8 +523,22 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
   const [ballotAccepted, setBallotAccepted] = useState(false);
   const [selectedVotingId, setSelectedVotingId] = useState("");
   const [internalActiveTab, setInternalActiveTab] = useState<VoterTab>(() => (linkedQuestionnaireId ? "vote" : "configure"));
+  const [paperBallotIdentity, setPaperBallotIdentity] = useState<ManualBallotIdentity | null>(null);
   const onIdentityChange = props.onIdentityChange;
   const activeTab = props.activeTab ?? internalActiveTab;
+  /**
+   * A paper-ballot operator can sign a ballot into the ordinary vote screen
+   * (F3-T4).  When they do, the digital submission flow runs with the ballot's
+   * own keypair, so the paper ballot travels the same blind-credential path as
+   * a digital vote instead of a parallel one.
+   */
+  const votePaneLocalVoterNsec = paperBallotIdentity?.nsec || questionnaireLocalVoterNsec;
+  const votePaneLocalVoterNpub = paperBallotIdentity?.npub || activeVoterNpub;
+  const votePaneAutoSignerLogin = paperBallotIdentity ? false : questionnaireAutoSignerLogin;
+  const paperBallotQuestionnaireId = linkedQuestionnaireId
+    || readyAnnouncedQuestionnaireIds[0]
+    || announcedQuestionnaireIds[0]
+    || "";
   const setActiveTab = useCallback((nextTab: VoterTab) => {
     setInternalActiveTab(nextTab);
     props.onActiveTabChange?.(nextTab);
@@ -3250,6 +3265,15 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
               Vote
             </UiButton>
             <UiButton
+              icon='clipboard'
+              role='tab'
+              aria-selected={activeTab === 'paperBallot'}
+              className={`simple-voter-tab${activeTab === 'paperBallot' ? ' is-active' : ''}`}
+              onPress={() => selectTab('paperBallot')}
+            >
+              Paper ballot
+            </UiButton>
+            <UiButton
               icon='message'
               role='tab'
               aria-selected={activeTab === 'messages'}
@@ -3428,9 +3452,9 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
               onParticipationHistoryChange={setQuestionnaireParticipationHistory}
               announcedQuestionnaireIds={readyAnnouncedQuestionnaireIds}
               optionAAnnouncedQuestionnaireIds={announcedQuestionnaireIds}
-              localVoterNpub={activeVoterNpub}
-              localVoterNsec={questionnaireLocalVoterNsec}
-              autoSignerLogin={questionnaireAutoSignerLogin}
+              localVoterNpub={votePaneLocalVoterNpub}
+              localVoterNsec={votePaneLocalVoterNsec}
+              autoSignerLogin={votePaneAutoSignerLogin}
               optionARequestBlindBallotNonce={optionARequestBlindBallotNonce}
               showOptionALoginAction={false}
               onActiveQuestionnaireIdChange={props.onActiveQuestionnaireIdChange}
@@ -3657,6 +3681,36 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
             )}
         </section>
 
+        {activeTab === 'paperBallot' ? (
+          <section
+            className='simple-voter-tab-panel'
+            role='tabpanel'
+            aria-label='Enter paper ballot'
+          >
+            <ManualBallotEntry
+              questionnaireId={paperBallotQuestionnaireId}
+              credential={null}
+              onOpenDigitalFlow={(identity) => {
+                setPaperBallotIdentity(identity);
+                if (identity.questionnaireId) {
+                  setLinkedQuestionnaireId(identity.questionnaireId);
+                  setAnnouncedQuestionnaireIds((current) => (
+                    current.includes(identity.questionnaireId) ? current : [...current, identity.questionnaireId]
+                  ));
+                  setReadyAnnouncedQuestionnaireIds((current) => (
+                    current.includes(identity.questionnaireId) ? current : [...current, identity.questionnaireId]
+                  ));
+                }
+                if (identity.inviteCode) {
+                  setLinkedPrivateInviteCode(identity.inviteCode);
+                }
+                selectTab('vote');
+              }}
+              onExit={() => setActiveTab('configure')}
+            />
+          </section>
+        ) : null}
+
         {activeTab === 'messages' ? (
           <section
             className='simple-voter-tab-panel'
@@ -3703,9 +3757,9 @@ export default function SimpleUiApp(props: SimpleUiAppProps = {}) {
                 displayMode='settings'
                 announcedQuestionnaireIds={readyAnnouncedQuestionnaireIds}
                 optionAAnnouncedQuestionnaireIds={announcedQuestionnaireIds}
-                localVoterNpub={activeVoterNpub}
-                localVoterNsec={questionnaireLocalVoterNsec}
-                autoSignerLogin={questionnaireAutoSignerLogin}
+                localVoterNpub={votePaneLocalVoterNpub}
+                localVoterNsec={votePaneLocalVoterNsec}
+                autoSignerLogin={votePaneAutoSignerLogin}
                 showOptionALoginAction={false}
                 onActiveQuestionnaireIdChange={props.onActiveQuestionnaireIdChange}
                 onBallotReceivedChange={props.onBallotReceivedChange}
