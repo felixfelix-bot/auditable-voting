@@ -45,10 +45,9 @@ jobs:
         working-directory: web
 
   # The Playwright specs under web/e2e are the project's end-to-end behaviour
-  # contract (coordinator + voter flows, OTP admission, theme, relay
-  # determinism). Nothing in this repo ran them on a PR, so an e2e regression
-  # could reach main unnoticed — the specs only run if a developer remembers
-  # to run them locally.
+  # contract (coordinator + voter flows, OTP admission, theme). Nothing in this
+  # repo ran them on a PR, so an e2e regression could reach main unnoticed — the
+  # specs only run if a developer remembers to run them locally.
   e2e-smoke:
     name: Web E2E smoke (playwright)
     runs-on: ubuntu-latest
