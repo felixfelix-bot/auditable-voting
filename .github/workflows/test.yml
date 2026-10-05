@@ -84,7 +84,15 @@ jobs:
         # Chromium (not the local `channel: chrome` default) so the job runs on
         # the stock runner image. Videos are enabled by playwright.config.ts;
         # they are uploaded on failure so a red run is diagnosable.
-        run: npx playwright test
+        #
+        # Explicit spec list — e2e/github-pages-video.spec.ts is deliberately
+        # excluded. It drives the DEPLOYED GitHub Pages site via
+        # resolvePagesBaseUrl() rather than localhost, so it cannot validate a
+        # PR's code (it exercises whatever is currently deployed), and it
+        # currently times out in harvestCodes() against that site. The three
+        # specs below run against the local dev server and are the behaviour
+        # contract this job gates.
+        run: npx playwright test e2e/delivery-smoke.spec.ts e2e/resident-otp-admission.spec.ts e2e/theme-toggle.spec.ts
         working-directory: web
         env:
           PLAYWRIGHT_USE_BUNDLED_CHROMIUM: "1"
