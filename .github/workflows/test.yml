@@ -76,6 +76,16 @@ jobs:
         run: npm ci
         working-directory: web
 
+      # Build the wasm artifacts BEFORE Playwright starts the dev server.
+      # `npm run dev` has a `predev` hook (ensure-wasm-artifacts.mjs) that builds
+      # them on demand, but on a cold runner that Rust compile blows past
+      # playwright.config.ts's webServer timeout — the job died with
+      # "Timed out waiting 60000ms from config.webServer". Building here means
+      # the predev hook is a no-op by the time the webServer starts.
+      - name: Build wasm artifacts
+        run: npm run build:wasm
+        working-directory: web
+
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
         working-directory: web

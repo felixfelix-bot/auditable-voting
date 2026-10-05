@@ -38,6 +38,9 @@ export default defineConfig({
     command: "npm run dev",
     port: 5173,
     reuseExistingServer: true,
-    timeout: 60_000,
+    // Generous because `npm run dev` triggers the `predev` wasm build on a
+    // cold checkout. CI builds the artifacts in an earlier step so this is
+    // normally fast, but a 60s budget proved too tight on a fresh runner.
+    timeout: 180_000,
   },
 });
