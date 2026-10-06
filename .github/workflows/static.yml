@@ -1,8 +1,18 @@
 name: Deploy GitHub Pages
 
+# DO NOT re-add a `push:` trigger to this workflow.
+#
+# This repo publishes ONE GitHub Pages site, and Pages has a single deployment
+# slot. pr-previews.yml already builds the default branch into the site root
+# (include_root) AND every per-PR preview into /<label>/ plus the /previews/
+# hub. When this workflow also ran on push to main it replaced the whole site
+# with a root-only build, silently deleting /previews/, /pr-25/, /pr-27/,
+# /pr-28/, /pr-29/ and /integrated/.
+#
+# That is exactly how the preview hub 404'd on 2026-10-07: a fork-main push
+# triggered this workflow (run 37538150030) right after a successful
+# pr-previews deploy (run 37437148947). Keep this workflow manual-only.
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
 
 env:
