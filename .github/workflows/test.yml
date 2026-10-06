@@ -40,6 +40,22 @@ jobs:
         run: npm ci
         working-directory: web
 
+      # The wasm packages are generated, not committed, and `tsc --noEmit` has no
+      # pre-hook (unlike `npm test` / `npm run build`), so it imports
+      # src/wasm/*/pkg directly. Build them once here, explicitly, before the
+      # typecheck: this keeps the gate honest instead of relying on a later hook.
+      - name: Build wasm artifacts
+        run: npm run build:wasm
+        working-directory: web
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+        working-directory: web
+
+      - name: Build static site (vite build)
+        run: npx vite build
+        working-directory: web
+
       - name: Run web unit tests
         run: npm test
         working-directory: web
