@@ -1,0 +1,159 @@
+name: PR previews (Pages)
+
+# Builds several open-PR branches from THIS fork into one Pages artifact:
+#   /                       -> the default branch (keeps the main site working)
+#   /<label>/               -> one preview per requested ref
+#   /previews/              -> hub page linking every preview in this run
+#
+# Usage (operator-only, fork tooling — never upstreamed):
+#   gh workflow run pr-previews.yml --repo felixfelix-bot/auditable-voting \
+#     -f refs='pr-25=feature/voter-otp-entry,pr-27=feat/issue12-consolidated,pr-28=feat/windowed-publication-clean,pr-29=pr/audit-otp-ttl-and-e2e-ci'
+#
+# Each entry is `label=branch`; with no label the branch name is slugified
+# (leading feature/ feat/ pr/ stripped). The github-pages environment must list
+# the branches in its deployment branch policy, otherwise the deploy step fails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "Comma-separated `label=branch` (or plain branch) list to build as previews"
+        required: true
+        default: "pr-25=feature/voter-otp-entry,pr-27=feat/issue12-consolidated,pr-28=feat/windowed-publication-clean,pr-29=pr/audit-otp-ttl-and-e2e-ci"
+      include_root:
+        description: "Also build the default branch at the site root"
+        required: false
+        default: "true"
+      install_fallback:
+        description: "Retry with `npm install` when `npm ci` fails (lockfile drift)"
+        required: false
+        default: "true"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  PREVIEW_REFS: ${{ inputs.refs }}
+  INCLUDE_ROOT: ${{ inputs.include_root }}
+  INSTALL_FALLBACK: ${{ inputs.install_fallback }}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h / | tail -1
+
+      - name: Assemble preview artifact
+        id: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          SITE="_site"
+          rm -rf "$SITE"; mkdir -p "$SITE/previews"
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+
+          slugify() {
+            printf '%s' "$1" \
+              | sed -E 's#^refs/heads/##; s#^(feature|feat|fix|chore|docs)/##' \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's#[^a-z0-9._-]+#-#g; s#^-+##; s#-+$##'
+          }
+
+          build_ref() {
+            local ref="$1" label="$2" base_path="$3"
+            echo "::group::build $ref -> $base_path"
+            git fetch --depth 1 origin "$ref"
+            rm -rf "src-$label"
+            git worktree add --detach "src-$label" FETCH_HEAD
+            pushd "src-$label/web" >/dev/null
+            if ! npm ci; then
+              if [ "$INSTALL_FALLBACK" = "true" ]; then
+                echo "::warning::npm ci failed for $ref — falling back to npm install"
+                npm install
+              else
+                echo "::error::npm ci failed for $ref (set install_fallback=true to recover)"
+                exit 1
+              fi
+            fi
+            VITE_BASE_PATH="$base_path" npm run build
+            popd >/dev/null
+            mkdir -p "$SITE/$label"
+            cp -r "src-$label/web/dist/." "$SITE/$label/"
+            git worktree remove --force "src-$label"
+            echo "::endgroup::"
+          }
+
+          ROOT_LABEL=""
+          if [ "$INCLUDE_ROOT" = "true" ]; then
+            build_ref "${GITHUB_REF_NAME}" "" "/$REPO_NAME/"
+          fi
+
+          LINKS=""
+          IFS=',' read -ra ENTRIES <<< "$PREVIEW_REFS"
+          for entry in "${ENTRIES[@]}"; do
+            entry="$(printf '%s' "$entry" | xargs)"
+            [ -z "$entry" ] && continue
+            if [[ "$entry" == *=* ]]; then
+              label="${entry%%=*}"; branch="${entry#*=}"
+            else
+              branch="$entry"; label="$(slugify "$branch")"
+            fi
+            build_ref "$branch" "$label" "/$REPO_NAME/$label/"
+            LINKS="${LINKS}<li><a href=\"../$label/\">$label</a> <code>$branch</code></li>"$'\n'
+          done
+
+          cat > "$SITE/previews/index.html" <<HTML
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>auditable-voting — PR previews</title>
+          <style>body{font:16px/1.5 system-ui,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem}code{background:#f2f2f2;padding:.1rem .3rem;border-radius:.2rem}li{margin:.4rem 0}</style>
+          </head><body>
+          <h1>PR previews</h1>
+          <p>Built from <code>$GITHUB_REPOSITORY</code> at <code>$GITHUB_SHA</code> (run <a href="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID">$GITHUB_RUN_ID</a>).</p>
+          <ul>
+          <li><a href="../">main</a> <code>${GITHUB_REF_NAME}</code></li>
+          $LINKS
+          </ul>
+          <p>Static build only: no relay configuration is bundled, so multi-party
+          relay flows are not exercised here. Use the local Playwright harness for those.</p>
+          </body></html>
+          HTML
+
+          echo "--- artifact tree (depth 2) ---"
+          find "$SITE" -maxdepth 2 -name index.html | sort
+          du -sh "$SITE"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
