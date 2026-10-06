@@ -4,6 +4,10 @@
   "version": "0.1.166",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=9"
+  },
   "scripts": {
     "build:wasm": "npm run build:wasm:legacy && npm run build:wasm:coordinator",
     "build:wasm:legacy": "cd rust-core && wasm-pack build --target bundler --out-dir ../src/wasm/auditable_voting_core/pkg",

@@ -69,11 +69,16 @@ Key web routes:
 
 ## Quick Start
 
-Install dependencies:
+Install dependencies from the committed lockfile (deterministic — `npm install` is
+free to re-resolve and mutate `web/package-lock.json`):
 
 ```bash
-npm --prefix web install
+npm --prefix web ci
 ```
+
+The web app runs on Node.js 22.12 or newer; CI (`.github/workflows/test.yml`) pins
+Node.js 24. `npm ci` was verified against npm 9.2, 10.9, 11.0, 11.6 and 11.21 from a
+clean checkout (`rm -rf web/node_modules`).
 
 Run the web app locally:
 
