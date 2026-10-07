@@ -59,6 +59,18 @@ and that the role-specific controls rendered — and reports any 4xx/5xx asset.
   Docker, no port offsets, no wake-on-request manager, no Cloudflare API.
   `pr-preview.sh --help` for build/deploy/list/teardown.
 
+## Currently deployed (2026-10-07)
+
+- `dashboard` / `voter` / `coordinator` / `results` / `av-integrated`.orangesync.tech
+  -> the **demo build**: trio (#25+#27+#28) **+ #30** (branding + light-default),
+  branch `pr/av-demo` @ `17f52e9`. Light is the default on every entry *regardless
+  of the OS colour scheme*, and the Auroville icon serves on all hosts.
+- `av-pr25` / `av-pr27` / `av-pr28`.orangesync.tech -> each PR built from **its own
+  ref** (distinct hashed bundle per preview), no branding.
+- `av-integrated` deliberately matches the role subdomains; the per-PR previews are
+  the PR-accurate ones. #29/#31 are CI/test-only so a preview would be identical to
+  base; #30 is folded into the demo rather than previewed separately.
+
 ## Pitfalls (each one cost real time)
 
 - **`cp -a` onto the Caddyfile breaks reload.** `cp -a` preserves the source mode;
