@@ -47,7 +47,7 @@ The practical target is small-organisation and controlled-pilot voting, not high
 
 - Voter **paper ballot entry**. The voter section has an **Enter paper ballot** tab for a ballot that has been filled in on paper. Enter, or paste from a ballot link that carries it, the `nsec` printed on the ballot together with its invite code, then confirm the derived `npub` shown back on screen. The questionnaire is then rendered with the same answer controls and the same conditional-question (`showIf`) rules as the digital voter panel, and the answers are converted and validated with the digital flow's own converter and validator before they are submitted. A ballot whose voting credential is not held on this device is never given an invented one: the screen instead continues into the digital vote screen with the ballot's own key, so the ballot requests its credential and submits through exactly the same flow as a digital vote.
 
-The interface ships in a calm dark theme by default and also offers a bright light theme. A sun/moon toggle in the corner of every screen switches between the two; the choice is remembered on the device, and first visits follow the system colour-scheme preference.
+The interface ships in a bright light theme by default and also offers a calm dark theme. A sun/moon toggle in the corner of every screen switches between the two, and the choice is remembered on the device. First visits always start light: the system colour-scheme preference is deliberately not consulted, so every instance looks the same out of the box.
 
 ## Repository Layout
 

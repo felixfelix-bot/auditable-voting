@@ -8,9 +8,13 @@ import { defineConfig } from "@playwright/test";
  * Vite dev server on port 5173.
  *
  * Uses the system-installed google-chrome-stable via channel: 'chrome'.
- * Default colorScheme is 'dark' so tests that clear localStorage get
- * the expected dark default (matches app's fallback).
+ * colorScheme is deliberately pinned to 'dark': the instance default is light,
+ * so this proves the app ignores the OS preference (theme-toggle tests 6 + 8).
  */
+// Other worktrees on this box grab port 5173; allow an override so an e2e run
+// can never silently reuse a foreign dev server (reuseExistingServer: true).
+const PORT = Number(process.env.AV_E2E_PORT ?? 5173);
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
@@ -21,7 +25,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${PORT}`,
     video: "on",
     screenshot: "only-on-failure",
     channel: "chrome",
@@ -29,7 +33,7 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev",
-    port: 5173,
+    port: PORT,
     reuseExistingServer: true,
     timeout: 60_000,
   },
