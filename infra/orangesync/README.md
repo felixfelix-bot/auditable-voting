@@ -1,0 +1,58 @@
+# AV demo deploy — `*.orangesync.tech` role subdomains
+
+Serves the consolidated AV build (the `pr/av-integration` merge of #25 + #27 + #28)
+from four role-scoped subdomains so testers land straight in the right UI.
+
+| URL | Serves | Role |
+|---|---|---|
+| `dashboard.orangesync.tech` | `/` — the role picker | choose any |
+| `voter.orangesync.tech` | `/vote.html?role=voter` | voter |
+| `coordinator.orangesync.tech` | `/dashboard.html?role=coordinator` | coordinator ("Organiser") |
+| `results.orangesync.tech` | `/index.html?role=auditor` | auditor ("Observer") |
+
+## Why subdomains need no DNS work
+
+`*.orangesync.tech` is a wildcard on Cloudflare pointing at the box, so every
+single-label name already resolves. Only a Caddy site block is required.
+
+## Why redirects, not separate builds
+
+All five HTML entry points render the same shell and differ only in
+`initialRole`. The shell shows the role picker whenever the URL carries no
+`?role=` (`web/src/SimpleAppShell.tsx`). So the role is pinned by the URL, per
+subdomain — no app code change, no upstream impact, one build.
+
+## Deploying
+
+```bash
+# 1. build the consolidated artifact (base path must be "/", not a Pages subpath)
+cd web && npm run build            # -> web/dist
+
+# 2. ship it and (re)install the Caddy block
+infra/orangesync/deploy-demo.sh    # rsync + caddy validate + reload
+```
+
+The script: stages `web/dist`, rsyncs to `/srv/av-demo`, installs
+`av-demo.caddy`, appends the import line **once**, runs
+`caddy validate`, then reloads. It backs up the shared Caddyfile first.
+
+## Verifying
+
+```bash
+node infra/orangesync/verify-subdomains.mjs
+```
+
+Loads all four hosts in headless Chromium and asserts each resolved URL, title,
+and that the role-specific controls rendered — and reports any 4xx/5xx asset.
+
+## Notes / known state
+
+- `results.orangesync.tech` shows an empty auditor view until an election is
+  supplied (`?q=<id>`); that is the expected empty state, not a fault.
+- The auditor page logs one console error: `wss://relay.0xchat.com/` does not
+  resolve (ERR_NAME_NOT_RESOLVED) — a dead default relay in the app, unrelated
+  to this deploy, worth its own card.
+- The box's `/` is ~93% full; the site is ~25 MB.
+- Per-PR previews (the market#1363 pattern) are NOT here yet: they would add one
+  site block per PR inside this same imported file. Static app, so no Docker,
+  no port offsets, no manager, and no Cloudflare API — unlike market.

@@ -1,0 +1,47 @@
+# Auditable Voting — role-scoped demo subdomains (OrangeSync box, Caddy).
+#
+# Deployed as a SEPARATE imported file — /etc/caddy/av-demo.caddy, pulled in by
+# a single `import av-demo.caddy` line in /etc/caddy/Caddyfile. Never hand-edit
+# the shared Caddyfile beyond that one line; it serves ~24 other live sites.
+#
+# Why redirects instead of separate builds:
+#   The shell shows a ROLE PICKER whenever the URL has no ?role=
+#   (web/src/SimpleAppShell.tsx: showGateway = !hasRoleInUrl() || shouldForceGatewayFromUrl()).
+#   Only an explicit ?role=<voter|coordinator|auditor> goes straight into that
+#   role's UI. The five HTML entry points all render the same shell, so pinning
+#   a role is a URL concern, not a build concern. Hence: redirect the root of
+#   each role subdomain to its own entry WITH the role param.
+#
+# Entry -> role mapping (as written in web/src/*.tsx):
+#   index.html        -> initialRole "auditor"      (app label: "Observer")
+#   vote.html         -> initialRole "voter"
+#   dashboard.html    -> initialRole "coordinator"  (app label: "Organiser")
+
+# The dashboard deliberately keeps the picker: no ?role= param, so the shell
+# renders the gateway and the visitor chooses a role.
+dashboard.orangesync.tech {
+	root * /srv/av-demo
+	encode gzip
+	file_server
+}
+
+voter.orangesync.tech {
+	redir / /vote.html?role=voter
+	root * /srv/av-demo
+	encode gzip
+	file_server
+}
+
+coordinator.orangesync.tech {
+	redir / /dashboard.html?role=coordinator
+	root * /srv/av-demo
+	encode gzip
+	file_server
+}
+
+results.orangesync.tech {
+	redir / /index.html?role=auditor
+	root * /srv/av-demo
+	encode gzip
+	file_server
+}
