@@ -67,6 +67,14 @@ and that the role-specific controls rendered — and reports any 4xx/5xx asset.
   `sudo caddy validate` (running as **root**) cheerfully prints `Valid configuration`.
   Always `install -m 644` (or `chmod 644`) after writing a file under `/etc/caddy/`,
   and treat a reload failure as a hard error, not a warning.
+- **No apostrophes inside a single-quoted `ssh '...'` payload.** A comment reading
+  `mktemp's` silently terminated the quoted string and the script died later with
+  `line 119: unexpected EOF while looking for matching '`. The *build* still
+  succeeded, so the run looked half-successful while the deploy half never ran.
+  Always `bash -n script.sh` after editing a shell script.
+- **A build succeeding is not the deploy succeeding.** The per-PR loop printed
+  three clean `✓ built in ...` lines and deployed nothing. Check the deployment
+  artefact (the URL), never the build log, before reporting a preview as live.
 - **`tls.obtain` failures in the journal are normal and non-fatal** — Caddy keeps
   serving. There are pre-existing Let's Encrypt rate-limit errors on this box for
   `proxy.sovereignengineering.io` / `contextvm.sovereignengineering.io`, unrelated

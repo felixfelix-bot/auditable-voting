@@ -52,10 +52,11 @@ sync_caddy() {
       [ "$label" = "*" ] && continue
       printf "av-%s.orangesync.tech {\n\troot * %s\n\tencode gzip\n\tfile_server\n}\n\n" "$label" "$d"
     done > "$tmp"
-    # install(1), NOT cp -a: cp -a preserves mktemp's 0600 mode, and the caddy
-    # systemd unit adapts the config as the unprivileged `caddy` user -> the
-    # reload dies with "permission denied" while `caddy validate` (run as root)
+    # install(1), NOT cp -a: cp -a preserves the mktemp 0600 mode, and the
+    # caddy systemd unit adapts the config as the unprivileged caddy user -> the
+    # reload dies with "permission denied" while caddy validate (run as root)
     # happily says "Valid configuration". Exactly that bit us on 2026-10-07.
+    # NOTE: no apostrophes in this block - it lives inside a single-quoted ssh payload.
     sudo -n install -m 644 "$tmp" /etc/caddy/av-previews.caddy
     rm -f "$tmp"
     if ! sudo -n grep -qF "import av-previews.caddy" /etc/caddy/Caddyfile; then
