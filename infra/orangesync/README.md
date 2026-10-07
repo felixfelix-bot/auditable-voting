@@ -53,6 +53,23 @@ and that the role-specific controls rendered — and reports any 4xx/5xx asset.
   resolve (ERR_NAME_NOT_RESOLVED) — a dead default relay in the app, unrelated
   to this deploy, worth its own card.
 - The box's `/` is ~93% full; the site is ~25 MB.
-- Per-PR previews (the market#1363 pattern) are NOT here yet: they would add one
-  site block per PR inside this same imported file. Static app, so no Docker,
-  no port offsets, no manager, and no Cloudflare API — unlike market.
+- Per-PR previews use `pr-preview.sh` (the market#1363 pattern, minus the ~90%
+  that AV does not need): one static dir per preview under `/srv/av-preview/<label>`
+  and one generated site block per dir in `/etc/caddy/av-previews.caddy`. No
+  Docker, no port offsets, no wake-on-request manager, no Cloudflare API.
+  `pr-preview.sh --help` for build/deploy/list/teardown.
+
+## Pitfalls (each one cost real time)
+
+- **`cp -a` onto the Caddyfile breaks reload.** `cp -a` preserves the source mode;
+  a `mktemp` file is `0600`, so the `caddy` systemd unit — which adapts the config
+  as the *unprivileged* `caddy` user — dies with `permission denied`, while
+  `sudo caddy validate` (running as **root**) cheerfully prints `Valid configuration`.
+  Always `install -m 644` (or `chmod 644`) after writing a file under `/etc/caddy/`,
+  and treat a reload failure as a hard error, not a warning.
+- **`tls.obtain` failures in the journal are normal and non-fatal** — Caddy keeps
+  serving. There are pre-existing Let's Encrypt rate-limit errors on this box for
+  `proxy.sovereignengineering.io` / `contextvm.sovereignengineering.io`, unrelated
+  to AV.
+- Reload is atomic: if it fails, the previous config keeps serving, so a failed
+  reload leaves the new site *absent* rather than taking the box down.

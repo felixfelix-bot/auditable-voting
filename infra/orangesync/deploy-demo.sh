@@ -48,8 +48,15 @@ ssh $SSHOPT "$HOST" '
   fi'
 echo "--- validate ---"
 ssh $SSHOPT "$HOST" 'sudo -n caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1 | tail -2'
+ssh $SSHOPT "$HOST" 'sudo -n chmod 644 /etc/caddy/av-demo.caddy'
 echo "--- reload ---"
-ssh $SSHOPT "$HOST" 'sudo -n systemctl reload caddy && sleep 2 && systemctl is-active caddy'
+ssh $SSHOPT "$HOST" '
+  if ! sudo -n systemctl reload caddy; then
+    echo "ERROR: caddy reload FAILED - last journal lines:"
+    sudo -n journalctl -u caddy -n 12 --no-pager | tail -12
+    exit 1
+  fi
+  sleep 2; systemctl is-active caddy'
 
 echo
 echo "=== phase 3: verify over HTTPS (certs issue on first request) ==="
