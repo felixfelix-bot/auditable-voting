@@ -30,8 +30,9 @@ export default defineConfig(({ mode }) => ({
   plugins: [react(), wasm()],
   test: {
     // Playwright owns browser specs under web/e2e; Vitest must only discover
-    // unit and component tests under src.
-    include: ["src/**/*.test.{ts,tsx}"],
+    // unit and component tests under src — plus the coordinator CLI tests in
+    // scripts/, which spawn the real script through tsx in --dry-run.
+    include: ["src/**/*.test.{ts,tsx}", "scripts/**/*.test.mjs"],
     setupFiles: ["./src/test/setup.ts"],
     environment: "node",
     // Heavy protocol/runtime tests (questionnaireOptionA.runtime, BlindDm,
