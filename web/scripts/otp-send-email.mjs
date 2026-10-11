@@ -42,8 +42,8 @@ import {
   DEFAULT_BASE_URL,
   NomailApiError,
   challenge,
+  classifySendFailure,
   createCookieJar,
-  isDailyLimitError,
   quoteStatus,
   send,
   sendQuote,
@@ -318,6 +318,31 @@ async function createCashuRail({ tokenFile, mintUrl, amountSats, waitSeconds, lo
         cashuToken: cashu.getEncodedToken({ mint: mintUrl, proofs: sendProofs, unit: "sat" }),
       };
     },
+    /**
+     * F4-2: give the split postage back when the service refused the send.
+     * `remaining` deliberately excludes the sent proofs, so a failed attempt
+     * only becomes spendable again through this call. Re-receiving a token the
+     * service already consumed throws, which is logged rather than fatal.
+     */
+    async refund(payment) {
+      const token = payment?.cashuToken;
+      if (!token) {
+        return false;
+      }
+      try {
+        const recovered = await wallet.receive(token);
+        remaining = [...remaining, ...recovered];
+        log(
+          `  Recovered ${cashu.sumProofs(recovered).toNumber()} sats of postage back into the wallet.`,
+        );
+        return true;
+      } catch (error) {
+        log(
+          `  Postage for this attempt could not be re-received (${formatError(error)}) — it may already be spent.`,
+        );
+        return false;
+      }
+    },
   };
 }
 
@@ -346,6 +371,10 @@ function createLightningRail({ deps, waitSeconds, log }) {
         );
       }
       return { paidQuoteId: quote.quoteId };
+    },
+    /** A Lightning quote that was never paid has no postage to recover. */
+    async refund() {
+      return false;
     },
   };
 }
@@ -536,8 +565,9 @@ async function run() {
     }
 
     let row;
+    let payment;
     try {
-      const payment = await rail.payOne();
+      payment = await rail.payOne();
       const { subject, text } = buildEmail({ name: item.name, code, electionLabel });
       const response = await send(deps, { to: item.email, subject, text, ...payment });
       row = {
@@ -557,10 +587,13 @@ async function run() {
       };
       console.error(`${position} ${item.mastersListNumber} ${item.email} FAILED: ${row.detail}`);
 
-      if (isDailyLimitError(error)) {
-        stopReason = "the service reported its 100/day limit";
-      } else if (error instanceof CliError || !(error instanceof NomailApiError)) {
-        stopReason = `transport/payment error: ${formatError(error)}`;
+      // F4-2: every failure stops the batch. A 4xx NomailApiError used to fall
+      // through both branches, so the run kept splitting 100 sats per recipient
+      // and burnt the whole balance while sending nothing.
+      const failure = classifySendFailure(error);
+      stopReason = failure.stopReason;
+      if (failure.refundable && payment && typeof rail.refund === "function") {
+        await rail.refund(payment);
       }
     }
 

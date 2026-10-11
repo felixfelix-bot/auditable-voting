@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   NomailApiError,
   challenge,
+  classifySendFailure,
   createCookieJar,
   isDailyLimitError,
   parseError,
@@ -337,5 +338,42 @@ describe("send", () => {
     const { fetch, calls } = stubFetch(() => response(200, { nonce: "n" }));
     await challenge({ fetch, baseUrl: "https://staging.nomail.name" });
     expect(calls[0].url).toBe("https://staging.nomail.name/api/auth/challenge");
+  });
+});
+
+describe("classifySendFailure — a rejected payment must stop the batch and recover postage", () => {
+  it("stops the batch on a 402 payment rejection instead of continuing to burn postage", () => {
+    const failure = classifySendFailure(new NomailApiError(402, { reason: "mint rejected" }));
+    expect(failure.category).toBe("payment-rejected");
+    expect(failure.stopReason).toMatch(/HTTP 402/);
+    expect(failure.stopReason).toMatch(/mint rejected/);
+    expect(failure.refundable).toBe(true);
+  });
+
+  it("stops on every 4xx payment error", () => {
+    for (const status of [400, 401, 403, 409, 422]) {
+      const failure = classifySendFailure(new NomailApiError(status, { reason: "nope" }));
+      expect(failure.refundable).toBe(true);
+      expect(failure.category).toBe("payment-rejected");
+    }
+  });
+
+  it("stops on a 5xx so one outage cannot drain the balance", () => {
+    const failure = classifySendFailure(new NomailApiError(503, { reason: "upstream down" }));
+    expect(failure.category).toBe("server");
+    expect(failure.refundable).toBe(true);
+  });
+
+  it("keeps the daily-limit category and its operator-facing wording", () => {
+    const failure = classifySendFailure(new NomailApiError(429, { reason: "daily limit reached" }));
+    expect(failure.category).toBe("daily-limit");
+    expect(failure.stopReason).toMatch(/daily limit/i);
+  });
+
+  it("stops on a transport error and marks the postage recoverable", () => {
+    const failure = classifySendFailure(new Error("socket hang up"));
+    expect(failure.category).toBe("transport");
+    expect(failure.stopReason).toMatch(/socket hang up/);
+    expect(failure.refundable).toBe(true);
   });
 });

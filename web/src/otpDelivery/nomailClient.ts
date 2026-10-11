@@ -173,6 +173,58 @@ export function isDailyLimitError(error: unknown): boolean {
   return false;
 }
 
+export type SendFailureCategory = "daily-limit" | "payment-rejected" | "server" | "transport";
+
+export type SendFailure = {
+  category: SendFailureCategory;
+  /**
+   * Operator-facing reason the whole batch must stop. Never null: a failure the
+   * code does not understand is still a reason to stop spending postage.
+   */
+  stopReason: string;
+  /**
+   * True when the postage for this attempt was not consumed by the service and
+   * can be re-received into the wallet.
+   */
+  refundable: boolean;
+};
+
+/**
+ * Classify a failed send.
+ *
+ * Fixes F4-2 from the PR #27 review: a 4xx `NomailApiError` (e.g. a 402 from a
+ * mint the service rejects) used to fall through both `stopReason` branches, so
+ * the batch carried on to the next recipient, split another 100 sats, and burnt
+ * the entire balance while sending zero emails — while the docs claimed postage
+ * "is only spent on a send the service accepted". Every failure now stops the
+ * batch and the caller re-receives the split token.
+ */
+export function classifySendFailure(error: unknown): SendFailure {
+  if (isDailyLimitError(error)) {
+    return {
+      category: "daily-limit",
+      stopReason: "the service reported its daily limit",
+      refundable: true,
+    };
+  }
+  if (error instanceof NomailApiError) {
+    const rejected = error.status >= 400 && error.status < 500;
+    return {
+      category: rejected ? "payment-rejected" : "server",
+      stopReason: rejected
+        ? `the service rejected the send (HTTP ${error.status}: ${error.reason}) — postage returned to the wallet `
+          + `and the rest of the batch was NOT attempted`
+        : `the send failed server-side (HTTP ${error.status}: ${error.reason}) — postage returned to the wallet`,
+      refundable: true,
+    };
+  }
+  return {
+    category: "transport",
+    stopReason: `transport/payment error: ${error instanceof Error ? error.message : String(error)}`,
+    refundable: true,
+  };
+}
+
 function resolveBaseUrl(deps: NomailDeps): string {
   return (deps.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
