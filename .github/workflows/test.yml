@@ -43,6 +43,21 @@ jobs:
         run: npm ci
         working-directory: web
 
+      # `tsc --noEmit` and `vite build` have no npm pre-hook, so they do not
+      # trigger the wasm build the way `npm test` does. Build the generated wasm
+      # packages explicitly here, before the typecheck.
+      - name: Build wasm artifacts
+        run: npm run build:wasm
+        working-directory: web
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+        working-directory: web
+
+      - name: Production build (vite build)
+        run: npx vite build
+        working-directory: web
+
       - name: Run web unit tests
         run: npm test
         working-directory: web
