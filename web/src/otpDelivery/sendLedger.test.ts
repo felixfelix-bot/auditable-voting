@@ -385,3 +385,63 @@ describe("summarizeBatch", () => {
     expect(summary.summaryLine).toMatch(/1 not attempted/);
   });
 });
+
+describe("planSends exposes the refusal-to-regenerate count (F4-1)", () => {
+  it("reports how many codes need regeneration as data, not only as a note", () => {
+    const issuedAt = NOW - ADMISSION_TTL_MS - ONE_HOUR;
+    const stale = planSends({
+      codeRows: [
+        { name: "Alice Smith", code: "111111", mastersListNumber: "101", email: "alice@example.com", issuedAt },
+        { name: "Bob Jones", code: "222222", mastersListNumber: "102", email: "bob@example.com", issuedAt },
+      ],
+      roster: [],
+      ledger: [],
+      now: NOW,
+    });
+
+    expect(stale.regenerated).toBe(2);
+  });
+
+  it("is zero when every code is still inside the TTL", () => {
+    const fresh = planSends({
+      codeRows: [
+        {
+          name: "Alice Smith",
+          code: "111111",
+          mastersListNumber: "101",
+          email: "alice@example.com",
+          issuedAt: NOW - ONE_HOUR,
+        },
+      ],
+      roster: [],
+      ledger: [],
+      now: NOW,
+    });
+
+    expect(fresh.regenerated).toBe(0);
+  });
+
+  it("no longer promises an in-app re-import of codes invented at send time", () => {
+    const stale = planSends({
+      codeRows: [
+        {
+          name: "Alice Smith",
+          code: "111111",
+          mastersListNumber: "101",
+          email: "alice@example.com",
+          issuedAt: NOW - ADMISSION_TTL_MS - ONE_HOUR,
+        },
+      ],
+      roster: [],
+      ledger: [],
+      now: NOW,
+    });
+
+    const note = stale.notes.join(" ");
+    // The old note told the operator the fresh codes are "written to the
+    // regenerated-codes CSV for re-import into the app" — an import that does
+    // not exist, so the emailed code could never verify.
+    expect(note).not.toMatch(/re-import into the app/i);
+    expect(note).toMatch(/refuse|re-export/i);
+  });
+});

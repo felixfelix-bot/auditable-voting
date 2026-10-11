@@ -66,6 +66,15 @@ export interface SendPlan {
   sends: PlannedSend[];
   skipped: SkippedSend[];
   notes: string[];
+  /**
+   * How many planned sends would need a code regenerated at send time because
+   * the CSV code is outside the 24h admission TTL.
+   *
+   * Exposed as data (F4-1) so the sender CLI can refuse the batch: a code
+   * invented by the sender has no hash in the coordinator tab, so the voter
+   * could never verify it while the ledger recorded the send as `ok=true`.
+   */
+  regenerated: number;
 }
 
 export interface PlanSendsInput {
@@ -404,7 +413,7 @@ export function planSends({
 
   if (regenerated > 0) {
     notes.add(
-      `${regenerated} code(s) are older than the 24h admission TTL and will be regenerated at send time — the fresh codes are written to the regenerated-codes CSV for re-import into the app.`,
+      `${regenerated} code(s) are older than the 24h admission TTL. The sender refuses to regenerate them: a code invented at send time has no hash in the coordinator tab, so the voter could never verify it. Re-export fresh codes from the coordinator and re-run.`,
     );
   }
   if (assumedFresh > 0) {
@@ -413,7 +422,7 @@ export function planSends({
     );
   }
 
-  return { sends, skipped, notes: Array.from(notes) };
+  return { sends, skipped, notes: Array.from(notes), regenerated };
 }
 
 /**

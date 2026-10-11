@@ -25,8 +25,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import { parseResidentCsv } from "../src/residentRegister.ts";
-import { ADMISSION_TTL_MS, generateOtp } from "../src/otpService.ts";
-import { escapeCsvField } from "../src/otpDelivery/csv.ts";
+import { ADMISSION_TTL_MS } from "../src/otpService.ts";
 import {
   DAILY_SEND_CAP,
   EMAIL_COST_SATS,
@@ -379,20 +378,6 @@ function createLightningRail({ deps, waitSeconds, log }) {
   };
 }
 
-function writeRegeneratedCodes(path, entries) {
-  const header = "masters_list_number,email,name,code,issued_at";
-  const rows = entries.map((entry) =>
-    [
-      escapeCsvField(entry.mastersListNumber),
-      escapeCsvField(entry.email),
-      escapeCsvField(entry.name),
-      escapeCsvField(entry.code),
-      String(entry.issuedAt),
-    ].join(","),
-  );
-  writeFileSync(path, `${[header, ...rows].join("\n")}\n`, { mode: 0o600 });
-}
-
 async function run() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -465,6 +450,24 @@ async function run() {
   console.log(
     `Day cap:  ${sentToday}/${DAILY_SEND_CAP} used today (this run: ${Math.min(limit, plan.sends.length)})`,
   );
+
+  // F4-1 (PR #27 review): refuse to email a code the app can never verify.
+  //
+  // Codes verify only against hashes held in the coordinator tab's component
+  // state. A code invented here has no hash anywhere, yet the old code path
+  // emailed it and recorded the ledger row as `ok=true` — a permanent silent
+  // failure with no resend, on the normal day-2 resume path. Until the issued
+  // hashes are persisted per election (PR #25's `otpAdmissionRoster`), the only
+  // honest behaviour is to refuse and make the operator re-export.
+  if (plan.regenerated > 0) {
+    throw new CliError(
+      `${plan.regenerated} recipient(s) need a regenerated code, which this tool will not do:\n` +
+        "a code generated here has no hash in the coordinator tab, so the resident could never verify it\n" +
+        "while the ledger would record the attempt as Sent.\n" +
+        "Re-export a keyed codes CSV from the coordinator (masters_list_number,email,name,code,issued_at)\n" +
+        "with codes still inside the 24h admission TTL, then re-run. No postage was spent.",
+    );
+  }
 
   if (options.dryRun) {
     for (const item of plan.sends) {
@@ -544,7 +547,6 @@ async function run() {
 
   const electionLabel = options.election ?? "the residents' register";
   const results = [];
-  const regenerated = [];
   let stopReason = null;
 
   for (const [index, item] of plan.sends.entries()) {
@@ -553,15 +555,13 @@ async function run() {
       break;
     }
     const position = `[${index + 1}/${plan.sends.length}]`;
-    const code = item.code ?? generateOtp();
-    if (!item.code) {
-      regenerated.push({
-        mastersListNumber: item.mastersListNumber,
-        email: item.email,
-        name: item.name,
-        code,
-        issuedAt: Date.now(),
-      });
+    const code = item.code;
+    if (!code) {
+      // Unreachable: the F4-1 guard above refuses any plan that needs a
+      // regenerated code. Fail loudly rather than inventing an unverifiable one.
+      throw new CliError(
+        `internal error: planned a send to ${item.mastersListNumber} with no code; refusing to invent one`,
+      );
     }
 
     let row;
@@ -573,11 +573,11 @@ async function run() {
       row = {
         mastersListNumber: item.mastersListNumber,
         ok: true,
-        detail: item.reuseCsvCode ? "Sent" : "Sent (code regenerated)",
+        detail: "Sent",
         ref: response.from ?? payment.paidQuoteId ?? "",
         sentAt: Date.now(),
       };
-      console.log(`${position} ${item.mastersListNumber} ${item.email} sent${item.reuseCsvCode ? "" : " (regenerated code)"}`);
+      console.log(`${position} ${item.mastersListNumber} ${item.email} sent`);
     } catch (error) {
       row = {
         mastersListNumber: item.mastersListNumber,
@@ -614,16 +614,6 @@ async function run() {
   console.log(
     `Outstanding: ${plan.sends.length - accounting.sent} recipient(s) still need a code — re-run to resume.`,
   );
-
-  if (regenerated.length > 0) {
-    const regeneratedPath = `${resultsPath}.regenerated.csv`;
-    writeRegeneratedCodes(regeneratedPath, regenerated);
-    console.log("");
-    console.log(`Regenerated codes written to ${regeneratedPath}`);
-    console.log(
-      "IMPORTANT: those codes did not exist in the coordinator UI, so they must be imported/registered there before residents can verify them (see docs/otp-delivery.md).",
-    );
-  }
 
   if (accounting.partial) {
     return 1;
