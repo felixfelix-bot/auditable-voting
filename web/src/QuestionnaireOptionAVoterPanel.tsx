@@ -575,6 +575,9 @@ function getQuestionnaireRoundProgress(
     }
     return { label: "not started", submitted: false };
   }
+  if (state?.privateSubmissionQueued) {
+    return { label: "queued privately", submitted: true };
+  }
   if (state?.submissionAccepted === true) {
     return { label: "accepted", submitted: true };
   }
@@ -4106,7 +4109,9 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     : snapshot?.blindRequestSent
       ? credentialIssuerIsProxy ? "Request sent" : `Waiting for ${credentialIssuerName}`
       : "Not requested";
-  const submissionStateText = snapshot?.submissionAccepted === true
+  const submissionStateText = snapshot?.privateSubmissionQueued
+    ? "Queued privately"
+    : snapshot?.submissionAccepted === true
     ? "Accepted"
     : snapshot?.submissionAccepted === false
       ? "Rejected"
@@ -4118,7 +4123,11 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     ?? (!perQuestionMode ? snapshot?.responseNpub ?? "" : "");
   const submittedMarkerLabel = submittedMarkerNpub ? deriveActorDisplayId(submittedMarkerNpub) : "Unknown";
   const submittedMarkerWords = submittedMarkerNpub ? deriveIdentityWords(submittedMarkerNpub) : "";
-  const receiptStatusLabel = snapshot?.submissionAccepted === false ? "Rejected" : "";
+  const receiptStatusLabel = snapshot?.privateSubmissionQueued
+    ? "Queued privately"
+    : snapshot?.submissionAccepted === false
+      ? `Rejected${snapshot.privateSubmissionReceiptReason ? `: ${snapshot.privateSubmissionReceiptReason}` : ""}`
+      : "";
   const submittedAtLabel = displaySubmission?.submittedAt
     ? new Date(displaySubmission.submittedAt).toLocaleString()
     : "";
