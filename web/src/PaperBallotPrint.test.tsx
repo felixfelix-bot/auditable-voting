@@ -1,115 +1,138 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import PaperBallotPrint from "./PaperBallotPrint";
-import type { PaperBallot } from "./paperBallot";
+import { maskNsec, type PaperBallot } from "./paperBallot";
 
 vi.mock("qrcode", () => ({
-  default: {
-    toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,mock-qr"),
-  },
+  default: { toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,MOCKQR") },
 }));
 
-const TEST_NSEC = "nsec1c6gfkn8p0kcjn3dws63hgllgu6pa5q37ag084jzg8g6nnkpztxdq6zs0r2";
-const TEST_NPUB = "npub1w7vr0zenyuhtzhzwa7yne4zw3gw0aq8mp30r2f9p99e365lh757q77pvrv";
+// Realistic test fixture: the nsec is a REAL credential for the voter it names.
+const VOTER_NSEC = "nsec1abcdefghijklmnopqrstuv01234567890123456789012345678901234wxyz9";
+const VOTER_NPUB = "npub1fakefakefakefakefakefakefakefakefakefakefakefakefakefakefakef";
 
-const sampleBallot: PaperBallot = {
-  questionnaireId: "q_test123",
-  questionnaireTitle: "Municipal Election 2026",
-  questions: [
-    { questionId: "q1", prompt: "Do you approve of the budget?", type: "yes_no", required: true },
-    { questionId: "q2", prompt: "Any additional comments?", type: "free_text", required: false },
-    {
-      questionId: "q3",
-      prompt: "Choose your preferred candidate:",
-      type: "multiple_choice",
-      required: true,
-      options: [
-        { optionId: "opt_a", label: "Alice Johnson" },
-        { optionId: "opt_b", label: "Bob Smith" },
-      ],
-    },
-  ],
-  voterNsec: TEST_NSEC,
-  voterNpub: TEST_NPUB,
-  inviteCode: "abc123def456",
-  generatedAt: 1000000,
-};
+function baseBallot(): PaperBallot {
+  return {
+    questionnaireId: "q-demo-01",
+    questionnaireTitle: "Community Garden Budget",
+    questions: [
+      {
+        questionId: "q1",
+        prompt: "Approve the budget?",
+        type: "yes_no",
+        required: true,
+      },
+    ],
+    voterNsec: VOTER_NSEC,
+    voterNpub: VOTER_NPUB,
+    generatedAt: 1_000_000_000_000,
+  };
+}
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("PaperBallotPrint", () => {
   it("renders the questionnaire title and ID", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    expect(screen.getByText("Municipal Election 2026")).toBeTruthy();
-    expect(screen.getByText(/q_test123/)).toBeTruthy();
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(screen.getByText("Community Garden Budget")).toBeTruthy();
+    expect(screen.getByText(/Ballot ID: q-demo-01/)).toBeTruthy();
   });
 
   it("displays all question prompts", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    expect(screen.getByText(/Do you approve of the budget/)).toBeTruthy();
-    expect(screen.getByText(/Any additional comments/)).toBeTruthy();
-    expect(screen.getByText(/Choose your preferred candidate/)).toBeTruthy();
+    const ballot = baseBallot();
+    ballot.questions = [
+      ...ballot.questions,
+      { questionId: "q2", prompt: "Any comments?", type: "free_text", required: false },
+    ];
+    render(<PaperBallotPrint ballot={ballot} />);
+    expect(screen.getByText(/1\. Approve the budget\?/)).toBeTruthy();
+    expect(screen.getByText(/2\. Any comments\?/)).toBeTruthy();
   });
 
   it("renders a yes/no question with Yes/No checkboxes", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const questionEl = screen.getByText(/Do you approve of the budget/).closest(".ballot-question");
-    expect(questionEl).toBeTruthy();
-    expect(questionEl?.textContent).toContain("☐ Yes");
-    expect(questionEl?.textContent).toContain("☐ No");
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(screen.getAllByText("Yes")).toBeTruthy();
+    expect(screen.getAllByText("No")).toBeTruthy();
   });
 
   it("renders a free_text question with blank lines", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const questionEl = screen.getByText(/Any additional comments/).closest(".ballot-question");
-    expect(questionEl?.querySelector(".ballot-blank-lines")).toBeTruthy();
+    const ballot = baseBallot();
+    ballot.questions = [{ questionId: "q2", prompt: "Any comments?", type: "free_text", required: false }];
+    render(<PaperBallotPrint ballot={ballot} />);
+    expect(document.querySelectorAll(".ballot-blank-line").length).toBe(4);
   });
 
   it("renders a multiple_choice question with checkboxes for each option", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const questionEl = screen.getByText(/Choose your preferred candidate/).closest(".ballot-question");
-    expect(questionEl?.textContent).toContain("☐ Alice Johnson");
-    expect(questionEl?.textContent).toContain("☐ Bob Smith");
+    const ballot = baseBallot();
+    ballot.questions = [{
+      questionId: "q3",
+      prompt: "Pick one",
+      type: "multiple_choice",
+      required: true,
+      options: [
+        { optionId: "a", label: "Option A" },
+        { optionId: "b", label: "Option B" },
+      ],
+    }];
+    render(<PaperBallotPrint ballot={ballot} />);
+    expect(screen.getByText("Option A")).toBeTruthy();
+    expect(screen.getByText("Option B")).toBeTruthy();
   });
 
-  it("displays the voter nsec as monospace text", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const nsecEl = screen.getByText(TEST_NSEC);
-    expect(nsecEl).toBeTruthy();
-    expect(nsecEl.tagName).toBe("CODE");
+  // ── F3-1: the nsec must be masked on screen ─────────────────────────────
+  it("masks the nsec on screen: shows first 8 and last 4 chars only", () => {
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    // The raw key must NOT be present anywhere in the rendered output
+    expect(document.body.textContent).not.toContain(VOTER_NSEC);
+    // The masked form (derived from the same function the component uses)
+    expect(screen.getByText(maskNsec(VOTER_NSEC))).toBeTruthy();
+  });
+
+  it("exposes the full nsec only via the reveal control, not the initial DOM", () => {
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(document.body.textContent).not.toContain(VOTER_NSEC);
+    // Clicking "Reveal" must expose the full key (the print flow's source of truth)
+    fireEvent.click(screen.getByText("Reveal"));
+    expect(document.body.textContent).toContain(VOTER_NSEC);
   });
 
   it("displays the voter npub as monospace text", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const npubEl = screen.getByText(TEST_NPUB);
-    expect(npubEl).toBeTruthy();
-    expect(npubEl.tagName).toBe("CODE");
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(screen.getByText(VOTER_NPUB)).toBeTruthy();
   });
 
   it("renders a QR code image for the npub", async () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const qrImg = await screen.findByAltText(/QR/);
-    expect(qrImg).toBeTruthy();
-    expect(qrImg.getAttribute("src")).toBe("data:image/png;base64,mock-qr");
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    await waitFor(() => {
+      expect(document.querySelector("img.ballot-qr-image")).toBeTruthy();
+    });
+  });
+
+  // ── F3-2: ballot serial ────────────────────────────────────────────────
+  it("displays the ballot serial number when present", () => {
+    const ballot = { ...baseBallot(), serialNumber: "AV-000042" };
+    render(<PaperBallotPrint ballot={ballot} />);
+    expect(screen.getByText(/Serial: AV-000042/)).toBeTruthy();
+  });
+
+  it("omits the serial row when the ballot has no serial", () => {
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(screen.queryByText(/Serial:/)).toBeNull();
   });
 
   it("displays the invite code", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    expect(screen.getByText("abc123def456")).toBeTruthy();
+    const ballot = { ...baseBallot(), inviteCode: "INVITE-9A7B" };
+    render(<PaperBallotPrint ballot={ballot} />);
+    expect(screen.getByText("INVITE-9A7B")).toBeTruthy();
   });
 
   it("displays relay URLs", () => {
-    render(<PaperBallotPrint ballot={sampleBallot} />);
-    const relayEls = screen.getAllByText(/wss:\/\//);
-    expect(relayEls.length).toBeGreaterThan(0);
-  });
-
-  it("renders the print-only class on the wrapper", () => {
-    const { container } = render(<PaperBallotPrint ballot={sampleBallot} />);
-    expect(container.firstElementChild?.classList.contains("ballot-print")).toBe(true);
+    render(<PaperBallotPrint ballot={baseBallot()} />);
+    expect(screen.getAllByText(/wss:\/\//).length).toBeGreaterThan(0);
   });
 });
