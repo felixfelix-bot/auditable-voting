@@ -87,3 +87,18 @@ Run with coverage:
 ```bash
 cd web && npx vitest run src/otpService.test.ts --coverage
 ```
+
+## Integration with Masterlist Interop CSV Parser
+
+The OTP admission flow can now be driven from either the integer-mode resident
+register (`parseResidentCsv`, `masters_list_number` header) or the interop
+masterlist roster (`parseMasterlistCsv`, `id,masterlist_no,…` header).
+Both parsers live in `web/src/residentRegister.ts` and apply the same
+CSV-injection neutralisation to contact fields (see
+[docs/csv-injection-protection.md](csv-injection-protection.md#masterlist-interop-mode)).
+
+The masterlist interop mode introduces `masterlistNo` as a string eligibility
+key (e.g. `ML001`) — distinct from the integer `mastersListNumber` — and
+filters rows by `status=active` only.  Contact fields (email, phone, dob,
+country) are neutralised identically so exported rosters are safe to open in
+spreadsheet applications.
