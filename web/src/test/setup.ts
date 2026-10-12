@@ -21,3 +21,5 @@ export function setup(): void {
     writable: true,
   });
 }
+
+setup();

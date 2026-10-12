@@ -446,7 +446,7 @@
                 <li>The voter submits the questionnaire response anonymously; all questions share one proof, like one multi-part question.</li>
                 <li>Anyone can verify that accepted ballots are valid, unique, and correctly tallied.</li>
               </ol>
-              <p>The app renders in a dark theme by default, with a bright light theme one tap away via the sun/moon toggle in the corner of any screen. The choice is remembered per browser, first visits follow the system colour-scheme preference, and the protocol behaves identically in both themes.</p>
+              <p>The app renders in a light theme by default, with a calm dark theme one tap away via the sun/moon toggle in the corner of any screen. The choice is remembered per browser, first visits always start light (the system colour-scheme preference is deliberately not consulted), and the protocol behaves identically in both themes.</p>
             </div>
           </section>
 
@@ -502,6 +502,7 @@
               <li>Open an invite or request ballot access.</li>
               <li>Wait for ballot credentials.</li>
               <li>Submit each questionnaire with fresh scoped blind credentials, using the top questionnaire selector and Answer next when several invited questionnaires are waiting.</li>
+              <li>Enter a ballot that was filled in on paper from the <strong>Enter paper ballot</strong> tab: type the <code>nsec</code> printed on the ballot with its invite code, confirm the identity shown back, then answer the questions with the same controls as a digital vote.</li>
             </ul>
           </article>
           <article class="role-card">
@@ -511,6 +512,7 @@
               <li>Invite voters once, then apply that roster to later questionnaires and publish one roster-free public announcement.</li>
               <li>Invite voters or approve requests.</li>
               <li>Issue scoped blind credentials and watch results arrive.</li>
+              <li>Generate and print paper ballots for voters who cannot use the digital client, one fresh voter identity per ballot.</li>
             </ul>
           </article>
           <article class="role-card">
@@ -564,7 +566,7 @@
             <li>Whether the published tally matches the accepted public ballots.</li>
             <li>Encrypted answer details automatically in Organiser when the local organiser key is available, or in Observer when the matching organiser nsec is deliberately entered.</li>
           </ul>
-          <p>While a questionnaire is live, provisional answers are shown as live. A submitted public ballot is shown as published immediately because the voter cannot change it. The final public result summary remains the auditable closing record.</p>
+          <p>While a questionnaire is live, provisional answers are shown as live. A submitted public ballot is shown as published immediately because the voter cannot change it. The final public result summary remains the auditable closing record. Results open as a plain, human-readable view — total counts plus a per-question demographic breakdown (for example, community/country tallies) — with the verifiable re-foldable result hash and downloadable CSV pack kept behind a "Verification pack (auditors)" link for auditors; both views show the same numbers.</p>
         </div>
           </section>
 
@@ -619,13 +621,15 @@
           <li>Remote browser voting cannot fully prevent coercion, observation of the voter, or compromise of the voter's device. It is suitable for controlled pilots and small organisations only where those residual risks are accepted or mitigated by procedure.</li>
           <li>Metadata still matters: Nostr identities, relay choices, message timing, IP/network paths, and repeated device/browser use can leak more than the encrypted ballot payload does.</li>
           <li>If an answer-bearing question's required scope changes after credentials have been issued, voters need a fresh scoped credential.</li>
-          <li>Private invite status is published as an invite-code hash plus a per-code claimed-identity hash, so link holders can detect reuse without publishing the private invite code itself.</li>
+          <li>Private invite links default to one voter, but the organiser can set a bounded capacity from 1 to 10,000 voters when creating a link. Each distinct claimant receives independent blind credentials; the organiser keeps claimant identities locally while public status publishes only the invite-code hash, aggregate redemption count, and capacity until the link is full.</li>
+          <li>The organiser <strong>Start demo</strong> publishes a real Nostr questionnaire and shows general, private, and resident invitation paths. Resident imports stay only in the organiser browser. The resident-number access link and email OTP delivery are previews, not authentication, until a server-side verification service exists.</li>
           <li>Browser-held secret material needs careful handling.</li>
           <li>Client supply-chain integrity still needs discipline: signed releases, reproducible builds, dependency review, and clear instructions for voters who want to verify the client they are using.</li>
           <li>If threshold trustees are used, the project needs a documented key ceremony, trustee selection policy, backup/recovery procedure, and public record of trustee actions.</li>
           <li>Backup creates an encrypted full-state snapshot for the current app namespace, including local questionnaire, invite, response, relay, proxy, and actor-state records. Restoring it replaces the current namespace state on the device.</li>
           <li>Account menus, response rows, and backup filenames show a deterministic three-word label from the BIP39 English word list for matching a profile, anonymous response identity, or backup. It is not a BIP39/NIP-06 recovery mnemonic and cannot restore the private key without the nsec or backup file.</li>
           <li>The built-in Messages view needs a local nsec identity to unwrap and send helpline DMs; signer-only sessions should use their external signer or restore a local identity until signer-side NIP-17 wrapping is supported in-app.</li>
+          <li>A filled-in paper ballot is entered through the voter <strong>Enter paper ballot</strong> tab, which needs the <code>nsec</code> printed on the ballot. The QR code on a printed ballot encodes the <code>npub</code>, so scanning alone identifies the ballot but cannot sign in; the private key still has to be typed or pasted. A ballot entered on a device that holds no credential for it continues into the digital vote screen to request one, and a generated batch is still not persisted, so an unprinted batch is lost when the tab is closed or reloaded.</li>
           <li>The cryptographic design needs external review before production use.</li>
           <li>Large multi-organiser runs are not yet reliable on the current public relay set.</li>
         </ul>

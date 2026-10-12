@@ -6,6 +6,13 @@ import {
   normaliseQuestionBallotSlot,
   normalizeQuestionnaireDefinition,
   questionBallotScopeKey,
+  questionnaireGraceUntil,
+  questionnaireIsWindowedPublication,
+  questionnairePublicationPolicyFromDefinition,
+  questionnairePublicationPolicyGraceUntil,
+  questionnaireReleaseAt,
+  questionnaireResultSummaryIsPremature,
+  questionnaireSubmissionTimestamp,
   validateQuestionnaireDefinition,
   validateQuestionnaireResponsePayload,
   type QuestionnaireDefinition,
@@ -13,6 +20,7 @@ import {
 } from "./questionnaireProtocol";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import { DEFAULT_QUESTIONNAIRE_RELAYS } from "./questionnaireRelays";
+import type { LocalisedText } from "./i18n/types";
 
 function buildDefinition(): QuestionnaireDefinition {
   return {
@@ -73,6 +81,120 @@ describe("questionnaireProtocol", () => {
       .toContain("general_invite_pow_difficulty_invalid");
     expect(validateQuestionnaireDefinition({ ...buildDefinition(), generalInvitePowDifficulty: 1.5 } as QuestionnaireDefinition).errors)
       .toContain("general_invite_pow_difficulty_invalid");
+  });
+
+  it("requires a bounded finalization grace only for windowed publication", () => {
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 86_400,
+    }).valid).toBe(true);
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 0,
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_000_000,
+    }).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 1.5,
+    } as QuestionnaireDefinition).errors).toContain("finalization_grace_seconds_invalid");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "immediate",
+      finalizationGraceSeconds: 60,
+    }).errors).toContain("finalization_grace_seconds_unexpected");
+
+    expect(validateQuestionnaireDefinition({
+      ...buildDefinition(),
+      publicationMode: "bogus",
+    } as QuestionnaireDefinition).errors).toContain("publication_mode_invalid");
+  });
+
+  it("derives windowed release, grace, and normalized submission timestamps", () => {
+    const immediate = buildDefinition();
+    expect(questionnaireIsWindowedPublication(immediate)).toBe(false);
+    expect(questionnaireReleaseAt(immediate)).toBeNull();
+    expect(questionnaireGraceUntil(immediate)).toBeNull();
+    expect(questionnaireSubmissionTimestamp(immediate, 1_700_000_000)).toBe(1_700_000_000);
+
+    const windowed: QuestionnaireDefinition = {
+      ...immediate,
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    expect(questionnaireIsWindowedPublication(windowed)).toBe(true);
+    expect(questionnaireReleaseAt(windowed)).toBe(windowed.closeAt);
+    expect(questionnaireGraceUntil(windowed)).toBe(windowed.closeAt + 3_600);
+    expect(questionnaireSubmissionTimestamp(windowed, 1_700_000_000)).toBe(windowed.closeAt);
+
+    const windowedNoGrace: QuestionnaireDefinition = {
+      ...immediate,
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 0,
+    };
+    // A3: questionnaireGraceUntil keeps degrading a zero grace to the release
+    // slot. Nulling it here would make the submit-time window check false and
+    // publish immediately with the real submission time (the exact leak); the
+    // runtime instead raises an explicit invalid-mode error, and the *policy*
+    // helper below is the fail-closed twin.
+    expect(questionnaireGraceUntil(windowedNoGrace)).toBe(windowedNoGrace.closeAt);
+    expect(questionnairePublicationPolicyGraceUntil(
+      questionnairePublicationPolicyFromDefinition(windowedNoGrace),
+    )).toBeNull();
+  });
+
+  it("flags a result summary published before the windowed grace elapses", () => {
+    const windowed: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    const summary = { createdAt: windowed.closeAt + 10 };
+    expect(questionnaireResultSummaryIsPremature(summary, windowed)).toBe(true);
+    expect(questionnaireResultSummaryIsPremature({ createdAt: windowed.closeAt + 3_600 }, windowed)).toBe(false);
+    expect(questionnaireResultSummaryIsPremature({ createdAt: windowed.closeAt + 10 }, buildDefinition())).toBe(false);
+    expect(questionnaireResultSummaryIsPremature(null, windowed)).toBe(false);
+  });
+
+  it("uses the signed event timestamp for the premature guard, not a forged content createdAt (A4)", () => {
+    const windowed: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      publicationMode: "windowed",
+      finalizationGraceSeconds: 3_600,
+    };
+    // The signed event landed before the grace elapsed, but the (forgeable)
+    // content claims a far-future createdAt. max() would let the forged value win
+    // and fail open; the signed origin must keep the summary flagged premature.
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 99_999,
+      eventCreatedAt: windowed.closeAt + 10,
+    }, windowed)).toBe(true);
+    // min(signed, content): a content value earlier than the signed origin stays
+    // premature as well (fail closed in both directions).
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 10,
+      eventCreatedAt: windowed.closeAt + 99_999,
+    }, windowed)).toBe(true);
+    // Genuinely late on both clocks is not premature.
+    expect(questionnaireResultSummaryIsPremature({
+      createdAt: windowed.closeAt + 3_600,
+      eventCreatedAt: windowed.closeAt + 3_600,
+    }, windowed)).toBe(false);
   });
 
   it("supports questionnaire-defined voter groups while preserving legacy aliases", () => {
@@ -375,5 +497,547 @@ describe("questionnaireProtocol", () => {
     expect(result.valid).toBe(false);
     expect(result.errors).toContain("invalid_option_id:q2:invalid-option");
     expect(result.errors).toContain("missing_required_answer:q1");
+  });
+
+  // ── F1-T2: Multilingual content tests ─────────────────────────────
+
+  it("accepts a definition with LocalisedText prompts on all question types", () => {
+    const localisedPrompt: LocalisedText = {
+      en: "Was the course material clear?",
+      fr: "Le matériel du cours était-il clair ?",
+      ta: "பாடநூல் தெளிவாக இருந்ததா?",
+    };
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "yes_no",
+          prompt: localisedPrompt,
+          required: true,
+        },
+        {
+          questionId: "q2",
+          type: "multiple_choice",
+          prompt: { en: "Rate the pace", fr: "Évaluez le rythme" },
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "slow", label: { en: "Too slow", fr: "Trop lent" } },
+            { optionId: "good", label: { en: "About right", fr: "À propos" } },
+            { optionId: "fast", label: { en: "Too fast", fr: "Trop rapide" } },
+          ],
+        },
+        {
+          questionId: "q3",
+          type: "free_text",
+          prompt: { en: "What should be improved?" },
+          required: false,
+          maxLength: 1000,
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("accepts LocalisedText title and description on the definition", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback", fr: "Retour sur le cours", ta: "பாடநூல் கருத்து" },
+      description: { en: "Please answer all required questions.", fr: "Veuillez répondre à toutes les questions obligatoires." },
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("accepts an optional description that is empty localised text", () => {
+    // The builder leaves `description` in the definition even when the
+    // coordinator leaves the optional field blank. An empty value means "no
+    // description", not "missing English translation".
+    const emptyObjectDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { en: "" },
+    };
+    const emptyStringDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: "",
+    };
+    const omittedDescription: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: undefined,
+    };
+
+    for (const definition of [emptyObjectDescription, emptyStringDescription, omittedDescription]) {
+      const result = validateQuestionnaireDefinition(definition);
+      expect(result.errors).not.toContain("description_missing_en");
+      expect(result.valid).toBe(true);
+    }
+  });
+
+  it("rejects a description with text in another locale but no en", () => {
+    // English is the fallback base for every reader, so a translated
+    // description still has to carry `en` as soon as it carries any text.
+    const definition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { fr: "Veuillez répondre à toutes les questions obligatoires." },
+    } as unknown as QuestionnaireDefinition;
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("description_missing_en");
+  });
+
+  it("treats a whitespace-only description as no description", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      description: { en: "   " },
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.errors).not.toContain("description_missing_en");
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts LocalisedText with only en (fr/ta optional)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: { en: "Course feedback" },
+      questions: [
+        {
+          questionId: "q1",
+          type: "yes_no",
+          prompt: { en: "Was the course material clear?" },
+          required: true,
+        },
+        {
+          questionId: "q2",
+          type: "multiple_choice",
+          prompt: { en: "Rate the pace" },
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "slow", label: { en: "Too slow" } },
+            { optionId: "good", label: { en: "About right" } },
+            { optionId: "fast", label: { en: "Too fast" } },
+          ],
+        },
+        {
+          questionId: "q3",
+          type: "free_text",
+          prompt: { en: "What should be improved?" },
+          required: false,
+          maxLength: 1000,
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects LocalisedText prompt with missing en key", () => {
+    const definition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "yes_no",
+          prompt: { fr: "Question sans anglais" },
+          required: true,
+        },
+        {
+          questionId: "q2",
+          type: "multiple_choice",
+          prompt: "Rate the pace",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "slow", label: "Too slow" },
+            { optionId: "good", label: "About right" },
+          ],
+        },
+        {
+          questionId: "q3",
+          type: "free_text",
+          prompt: "What should be improved?",
+          required: false,
+          maxLength: 1000,
+        },
+      ],
+    } as unknown as QuestionnaireDefinition;
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("prompt_missing_en:q1");
+  });
+
+  it("rejects LocalisedText title with missing en key", () => {
+    const definition = {
+      ...buildDefinition(),
+      title: { fr: "Retour sur le cours" },
+    } as unknown as QuestionnaireDefinition;
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("title_missing_en");
+  });
+
+  it("rejects LocalisedText option label with missing en key", () => {
+    const definition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "yes_no",
+          prompt: "Was the course clear?",
+          required: true,
+        },
+        {
+          questionId: "q2",
+          type: "multiple_choice",
+          prompt: "Rate the pace",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "slow", label: { fr: "Trop lent" } },
+            { optionId: "good", label: "About right" },
+            { optionId: "fast", label: "Too fast" },
+          ],
+        },
+        {
+          questionId: "q3",
+          type: "free_text",
+          prompt: "What should be improved?",
+          required: false,
+          maxLength: 1000,
+        },
+      ],
+    } as unknown as QuestionnaireDefinition;
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("option_label_missing_en:q2:slow");
+  });
+
+  it("accepts mixed string and LocalisedText fields in the same definition", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      title: "Course feedback",
+      description: { en: "Please answer all required questions.", ta: "அனைத்து கட்டாய கேள்விகளுக்கும் பதிலளிக்கவும்." },
+      questions: [
+        {
+          questionId: "q1",
+          type: "yes_no",
+          prompt: "Was the course material clear?",
+          required: true,
+        },
+        {
+          questionId: "q2",
+          type: "multiple_choice",
+          prompt: { en: "Rate the pace", fr: "Évaluez le rythme", ta: "வேகத்தை மதிப்பிடவும்" },
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "slow", label: "Too slow" },
+            { optionId: "good", label: { en: "About right", fr: "À propos" } },
+            { optionId: "fast", label: "Too fast" },
+          ],
+        },
+        {
+          questionId: "q3",
+          type: "free_text",
+          prompt: "What should be improved?",
+          required: false,
+          maxLength: 1000,
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+  // --- F2-T1: Conditional logic (showIf) tests ---
+
+  it("accepts a valid showIf referencing an earlier yes_no question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("accepts a valid showIf referencing an earlier multiple_choice question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Describe your tech experience",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: ["tech"] },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects showIf referencing a non-existent question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "nonexistent",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_dependency_not_found:q2:nonexistent");
+  });
+
+  it("rejects showIf with a forward reference (later question)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q2",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+        { questionId: "q2", type: "yes_no", prompt: "Did you attend?", required: true },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_forward_reference:q1:q2");
+  });
+
+  it("rejects showIf answer type mismatch (yes_no condition on multiple_choice question)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_answer_type_mismatch:q2:q1");
+  });
+
+  it("rejects showIf multiple_choice with invalid option id", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: ["nonexistent"] },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_invalid_option_id:q2:q1:nonexistent");
+  });
+
+  it("accepts questions without showIf (backward compatibility)", () => {
+    const result = validateQuestionnaireDefinition(buildDefinition());
+    expect(result.valid).toBe(true);
+  });
+
+  // --- F2-T5: Conditional question response validation ---
+
+  it("accepts a response that omits a hidden required question (unmet showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: true,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_hidden_required",
+        submittedAt: 1712537200,
+        answers: [{ questionId: "q1", answerType: "yes_no", value: false }],
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).not.toContain("missing_required_answer:q2");
+  });
+
+  it("rejects a response that answers a hidden question (unmet showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_hidden_answer",
+        submittedAt: 1712537200,
+        answers: [
+          { questionId: "q1", answerType: "yes_no", value: false },
+          { questionId: "q2", answerType: "free_text", text: "should not be here" },
+        ],
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("answer_for_hidden_question:q2");
+  });
+
+  it("accepts a response that answers a visible conditional question (met showIf)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: true,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireResponsePayload({
+      definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: definition.questionnaireId,
+        responseId: "resp_visible_required",
+        submittedAt: 1712537200,
+        answers: [
+          { questionId: "q1", answerType: "yes_no", value: true },
+          { questionId: "q2", answerType: "free_text", text: "It was great" },
+        ],
+      },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
   });
 });

@@ -10,7 +10,10 @@ import {
   normaliseRankedOptionIds,
   validateQuestionnaireDefinition,
   questionnaireCredentialsPerVoter,
+  questionnaireGraceUntil,
+  questionnaireResultSummaryIsPremature,
   type QuestionnaireDefinition,
+  type LocalisableText,
   type QuestionnairePublishedResponseRef,
   type QuestionnaireQuestion,
   type QuestionnaireResponseAnswer,
@@ -18,11 +21,19 @@ import {
   type QuestionnaireStateEvent,
   type QuestionnaireStateValue,
   type QuestionnaireVoterGroup,
+  type QuestionCondition,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
+import { localisedFieldValue, toLocalisableText, trimLocalisableText, withLocalisedField } from "./i18n/localisedText";
+import { isLocalisedText } from "./i18n/types";
+import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
+import { type UiStringKey } from "./i18n/uiStrings";
+import type { LocalisedText } from "./i18n/types";
 import { generateQuestionnaireBlindKeyPair, toQuestionnaireBlindPublicKey, type QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import {
   QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
+  QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS,
   QUESTIONNAIRE_PROTOCOL_VERSION_V2,
 } from "./questionnaireProtocolConstants";
 import SimpleCollapsibleSection from "./SimpleCollapsibleSection";
@@ -33,7 +44,7 @@ import { buildQuestionnaireDefinitionReference, questionnaireDefinitionEventHash
 import { tryWriteClipboard } from "./clipboard";
 import { uploadQuestionnaireResultPack } from "./questionnaireResultPack";
 import { fetchLatestQuestionnaireDefinitionByCoordinator, fetchQuestionnaireBlindResponses, fetchQuestionnaireProvisionalResponses, fetchQuestionnaireResultSummary } from "./questionnaireTransport";
-import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofs } from "./questionnaireTransport";
+import { evaluateQuestionnaireBlindAdmissions, fetchQuestionnaireSubmissionDecisions, verifyQuestionnaireBlindResponseProofVerdicts, type QuestionnaireBlindProofVerdict } from "./questionnaireTransport";
 import {
   decryptQuestionnaireBlindResponseAnswers,
   parseQuestionnaireBlindResponseEvent,
@@ -56,6 +67,7 @@ import {
 import { createSignerService } from "./services/signerService";
 import { findCoordinatorBlindSigningPrivateKey, listElectionSummaries, loadCoordinatorState, loadElectionSummary, saveCoordinatorState, upsertElectionSummary } from "./questionnaireOptionAStorage";
 import { UiButton, UiIcon, UiSelect, UiSwitch, UiTextArea, UiTextField } from "./ui/DesignLayer";
+import { LocalisedTextTranslations } from "./ui/LocalisedTextTranslations";
 import {
   type WorkerElectionConfigSnapshot,
   fetchOptionAWorkerStatusDmsWithNsec,
@@ -176,7 +188,10 @@ type QuestionnaireCoordinatorPanelProps = {
   draftQuestionnaireId?: string;
   canApplyAdmissionsOnPublish?: boolean;
   onAfterPublishQuestionnaire?: (questionnaireId: string) => void | Promise<void>;
+  onDemoPublished?: () => void;
   onResponseDetailsChange?: (responseDetails: QuestionnaireResultsDashboardResponseDetail[]) => void;
+  onOpenObserver?: () => void;
+  demoSetupSignal?: number;
   onReadinessChange?: (items: QuestionnaireReadinessItem[]) => void;
   onPrimaryPublishActionChange?: (action: QuestionnairePrimaryPublishAction) => void;
   primaryPublishActionSignal?: number;
@@ -225,11 +240,11 @@ type QuestionnaireSubmissionDecisionEntry = {
 
 type QuestionnaireQuestionDraft = QuestionnaireQuestion;
 
-const QUESTION_TYPE_OPTIONS: Array<{ value: QuestionnaireQuestionDraft["type"]; label: string }> = [
-  { value: "yes_no", label: "Yes / No" },
-  { value: "multiple_choice", label: "Multiple choice" },
-  { value: "rank", label: "Ranked" },
-  { value: "free_text", label: "Free text" },
+const QUESTION_TYPE_OPTIONS: Array<{ value: QuestionnaireQuestionDraft["type"]; labelKey: UiStringKey }> = [
+  { value: "yes_no", labelKey: "questionTypeYesNo" },
+  { value: "multiple_choice", labelKey: "questionTypeMultipleChoice" },
+  { value: "rank", labelKey: "questionTypeRank" },
+  { value: "free_text", labelKey: "questionTypeFreeText" },
 ];
 
 function withNormalisedQuestionBallotGroup(question: QuestionnaireQuestionDraft): QuestionnaireQuestionDraft {
@@ -247,7 +262,7 @@ function sameStringSet(left: string[], right: string[]) {
   return leftSet.size === rightSet.size && [...leftSet].every((entry) => rightSet.has(entry));
 }
 
-function createYesNoQuestion(questionId: string, prompt = "", required = true): QuestionnaireQuestionDraft {
+function createYesNoQuestion(questionId: string, prompt: LocalisableText = "", required = true): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "yes_no",
@@ -312,7 +327,7 @@ function alignQuestionBallotGroups(questions: QuestionnaireQuestionDraft[]) {
   });
 }
 
-function createMultipleChoiceQuestion(questionId: string, prompt = "", required = true): QuestionnaireQuestionDraft {
+function createMultipleChoiceQuestion(questionId: string, prompt: LocalisableText = "", required = true): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "multiple_choice",
@@ -327,7 +342,7 @@ function createMultipleChoiceQuestion(questionId: string, prompt = "", required 
   };
 }
 
-function createRankQuestion(questionId: string, prompt = "", minimumRanked = 0): QuestionnaireQuestionDraft {
+function createRankQuestion(questionId: string, prompt: LocalisableText = "", minimumRanked = 0): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "rank",
@@ -351,7 +366,7 @@ function createNextOption(options: Array<{ optionId: string }>) {
   return { optionId: `option_${nextIndex}`, label: `Option ${nextIndex}` };
 }
 
-function createFreeTextQuestion(questionId: string, prompt = "", required = false): QuestionnaireQuestionDraft {
+function createFreeTextQuestion(questionId: string, prompt: LocalisableText = "", required = false): QuestionnaireQuestionDraft {
   return {
     questionId,
     type: "free_text",
@@ -361,6 +376,49 @@ function createFreeTextQuestion(questionId: string, prompt = "", required = fals
     maxLength: 500,
     encryptResponses: false,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Conditional question (showIf) helpers                               */
+
+/**
+ * Build a label for a question suitable for display in the dependency dropdown.
+ * Uses the prompt if available, otherwise falls back to the questionId.
+ */
+function questionDependencyLabel(question: QuestionnaireQuestionDraft): string {
+  const prompt = resolveLocalised(question.prompt, "en").trim();
+  return prompt || question.questionId;
+}
+
+/**
+ * Get the earlier questions (by index) that a question can depend on.
+ * A question cannot depend on itself or any later question.
+ */
+function earlierQuestions(questions: QuestionnaireQuestionDraft[], currentIndex: number): QuestionnaireQuestionDraft[] {
+  return questions.filter((_, index) => index < currentIndex);
+}
+
+/**
+ * Set or clear the showIf condition on a question draft.
+ * When condition is null, removes the showIf (sets to null).
+ */
+function withShowIf(question: QuestionnaireQuestionDraft, condition: QuestionCondition | null): QuestionnaireQuestionDraft {
+  return { ...question, showIf: condition };
+}
+
+/**
+ * When the dependency question changes, build a default requiredAnswer
+ * based on the dependency question's type.
+ */
+function defaultRequiredAnswerForQuestion(depQuestion: QuestionnaireQuestionDraft): QuestionCondition["requiredAnswer"] {
+  if (depQuestion.type === "yes_no") {
+    return { answerType: "yes_no", value: true };
+  }
+  if (depQuestion.type === "multiple_choice") {
+    return { answerType: "multiple_choice", selectedOptionIds: [] };
+  }
+  // For other types (rank, free_text), default to yes_no as a fallback
+  return { answerType: "yes_no", value: true };
 }
 
 function clearQuestionDraft(question: QuestionnaireQuestionDraft): QuestionnaireQuestionDraft {
@@ -404,14 +462,14 @@ function deriveNextQuestionId(current: QuestionnaireQuestionDraft[]) {
 }
 
 function isQuestionDraftValid(question: QuestionnaireQuestionDraft): boolean {
-  if (!question.prompt.trim()) {
+  if (!resolveLocalised(question.prompt, "en").trim()) {
     return false;
   }
   if (question.type === "multiple_choice") {
     if (question.options.length < 2) {
       return false;
     }
-    return question.options.every((option) => option.label.trim().length > 0);
+    return question.options.every((option) => resolveLocalised(option.label, "en").trim().length > 0);
   }
   if (question.type === "rank") {
     if (question.options.length < 2) {
@@ -420,7 +478,7 @@ function isQuestionDraftValid(question: QuestionnaireQuestionDraft): boolean {
     if (!Number.isFinite(question.minimumRanked) || question.minimumRanked < 0 || question.minimumRanked > question.options.length) {
       return false;
     }
-    return question.options.every((option) => option.label.trim().length > 0);
+    return question.options.every((option) => resolveLocalised(option.label, "en").trim().length > 0);
   }
   if (question.type === "free_text") {
     return Number.isFinite(question.maxLength) && question.maxLength > 0;
@@ -558,8 +616,8 @@ const WORKER_CREDENTIALS_STORAGE_KEY = "coordinator.worker-credentials.v1";
 
 type StoredQuestionnaireDraft = {
   questionnaireId: string;
-  title: string;
-  description: string;
+  title: LocalisableText;
+  description: LocalisableText;
   closeTimerEnabled: boolean;
   closeAfterMinutes: string;
   closeTimerUnit?: CloseTimerUnit;
@@ -577,6 +635,8 @@ type StoredQuestionnaireDraft = {
   generatedWorkerCoordinatorNpub?: string;
   generalInvitePowEnabled?: boolean;
   generalInvitePowDifficulty?: string;
+  windowedPublicationEnabled?: boolean;
+  finalizationGraceHours?: string;
 };
 
 const DEFAULT_WORKER_CONTROL_RELAYS = normalizeRelaysRust([
@@ -633,7 +693,10 @@ function normaliseStoredQuestions(input: unknown): QuestionnaireQuestionDraft[] 
       && typeof entry === "object"
       && typeof (entry as { questionId?: unknown }).questionId === "string"
       && typeof (entry as { type?: unknown }).type === "string"
-      && typeof (entry as { prompt?: unknown }).prompt === "string"
+      && (
+        typeof (entry as { prompt?: unknown }).prompt === "string"
+        || isLocalisedText((entry as { prompt?: unknown }).prompt)
+      )
     ))
     .map((entry) => {
       const withStoredGroup = (question: QuestionnaireQuestionDraft) => withNormalisedQuestionBallotGroup({
@@ -787,8 +850,8 @@ function readStoredQuestionnaireDraft(): StoredQuestionnaireDraft {
       questionnaireId: typeof parsed.questionnaireId === "string" && parsed.questionnaireId.trim()
         ? parsed.questionnaireId.trim()
         : fallbackId,
-      title: typeof parsed.title === "string" ? parsed.title : "",
-      description: typeof parsed.description === "string" ? parsed.description : "",
+      title: toLocalisableText(typeof parsed.title === "string" ? parsed.title : isLocalisedText(parsed.title) ? parsed.title : ""),
+      description: toLocalisableText(typeof parsed.description === "string" ? parsed.description : isLocalisedText(parsed.description) ? parsed.description : ""),
       closeTimerEnabled: parsed.closeTimerEnabled === true,
       closeAfterMinutes: typeof parsed.closeAfterMinutes === "string" && parsed.closeAfterMinutes.trim()
         ? parsed.closeAfterMinutes
@@ -814,6 +877,8 @@ function readStoredQuestionnaireDraft(): StoredQuestionnaireDraft {
       ),
       generalInvitePowEnabled: parsed.generalInvitePowEnabled === true,
       generalInvitePowDifficulty: typeof parsed.generalInvitePowDifficulty === "string" ? parsed.generalInvitePowDifficulty : "8",
+      windowedPublicationEnabled: parsed.windowedPublicationEnabled === true,
+      finalizationGraceHours: typeof parsed.finalizationGraceHours === "string" ? parsed.finalizationGraceHours : "24",
     };
   } catch {
     return {
@@ -1453,14 +1518,16 @@ function deriveAcceptedResponseDecryptedAnswerQuestionIds(response: Questionnair
 function buildDefinition(input: {
   questionnaireId: string;
   coordinatorPubkey: string;
-  title: string;
-  description: string;
+  title: LocalisableText;
+  description: LocalisableText;
   closeAfterMinutes?: number;
   questionnaireRelays?: string[];
   voterGroups?: QuestionnaireVoterGroup[];
   questions: QuestionnaireQuestionDraft[];
   blindSigningPublicKey?: QuestionnaireBlindPublicKey | null;
   generalInvitePowDifficulty?: number;
+  publicationMode?: "immediate" | "windowed";
+  finalizationGraceSeconds?: number;
 }): QuestionnaireDefinition {
   const createdAt = nowUnix();
   const closeAfterMinutes = Number.isFinite(input.closeAfterMinutes)
@@ -1473,8 +1540,8 @@ function buildDefinition(input: {
     flowMode: QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1,
     responseMode: QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN,
     questionnaireId: input.questionnaireId,
-    title: input.title,
-    description: input.description,
+    title: trimLocalisableText(input.title),
+    description: trimLocalisableText(input.description),
     createdAt,
     openAt: createdAt,
     closeAt: createdAt + (closeAfterMinutes * 60),
@@ -1483,6 +1550,12 @@ function buildDefinition(input: {
     responseVisibility: "private",
     eligibilityMode: "open",
     ...(input.generalInvitePowDifficulty ? { generalInvitePowDifficulty: input.generalInvitePowDifficulty } : {}),
+    ...(input.publicationMode === "windowed"
+      ? {
+          publicationMode: "windowed" as const,
+          finalizationGraceSeconds: Math.max(0, Math.floor(input.finalizationGraceSeconds ?? 0)),
+        }
+      : {}),
     allowMultipleResponsesPerPubkey: false,
     ballotCredentialMode: "questionnaire",
     blindSigningPublicKey: input.blindSigningPublicKey ?? null,
@@ -1534,6 +1607,8 @@ function comparableDefinitionDraftShape(definition: QuestionnaireDefinition) {
     ballotCredentialMode: definition.ballotCredentialMode ?? "questionnaire",
     credentialsPerVoter: questionnaireCredentialsPerVoter(definition),
     generalInvitePowDifficulty: definition.generalInvitePowDifficulty ?? 0,
+    publicationMode: definition.publicationMode ?? "immediate",
+    finalizationGraceSeconds: definition.finalizationGraceSeconds ?? 0,
     blindSigningPublicKey: definition.blindSigningPublicKey ?? null,
     closeDurationSeconds: definitionCloseDurationSeconds(definition),
     questionnaireRelays: comparableDefinitionRelaySet(definition),
@@ -1543,6 +1618,8 @@ function comparableDefinitionDraftShape(definition: QuestionnaireDefinition) {
 }
 
 export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordinatorPanelProps) {
+  const { locale } = useLocaleSafe();
+  const t = useTSafe();
   const deploymentMode = useMemo(() => readDeploymentModeFromUrl(), []);
   const isCourseFeedbackMode = deploymentMode === "course_feedback";
   const isNewRoundMode = props.newRoundMode === true;
@@ -1590,10 +1667,13 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
   const questionnaireRelaysInput = props.questionnaireRelaysInput ?? storedDraft.questionnaireRelays ?? "";
   const [useDefaultSetupRelays, setUseDefaultSetupRelays] = useState(() => normalizeQuestionnaireRelays(questionnaireRelaysInput).length === 0);
   const [questions, setQuestions] = useState<QuestionnaireQuestionDraft[]>(storedDraft.questions);
+  const lastDemoSetupSignalRef = useRef(0);
   const [voterGroups, setVoterGroups] = useState<QuestionnaireVoterGroup[]>(storedDraft.voterGroups ?? []);
   const [newVoterGroupLabel, setNewVoterGroupLabel] = useState("");
   const [generalInvitePowEnabled, setGeneralInvitePowEnabled] = useState(storedDraft.generalInvitePowEnabled ?? false);
   const [generalInvitePowDifficulty, setGeneralInvitePowDifficulty] = useState(storedDraft.generalInvitePowDifficulty ?? "8");
+  const [windowedPublicationEnabled, setWindowedPublicationEnabled] = useState(storedDraft.windowedPublicationEnabled ?? false);
+  const [finalizationGraceHours, setFinalizationGraceHours] = useState(storedDraft.finalizationGraceHours ?? "24");
   const generalInvitePowSliderValue = Math.min(
     GENERAL_INVITE_POW_MAX_DIFFICULTY,
     Math.max(0, Number.parseInt(generalInvitePowDifficulty, 10) || 0),
@@ -1897,6 +1977,19 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
   const selectedQuestionnaireIsKnownPublished = selectedQuestionnaireHasPublishedSignal;
   const publishedDefinition = selectedQuestionnaireIsKnownPublished;
   useEffect(() => {
+    const signal = props.demoSetupSignal ?? 0;
+    if (signal <= 0 || signal === lastDemoSetupSignalRef.current || view !== "build" || publishedDefinition) {
+      return;
+    }
+    lastDemoSetupSignalRef.current = signal;
+    setTitle("Neighbourhood Consultation Demo");
+    setDescription("A short demonstration questionnaire for a neighbourhood consultation.");
+    setQuestions([createYesNoQuestion("q1", "Do you support creating a shared community garden?")]);
+    setCloseTimerEnabled(false);
+    setVoterGroups([]);
+    setStatus("Demo questionnaire ready. Review it, then select Go Live to publish.");
+  }, [props.demoSetupSignal, publishedDefinition, view]);
+  useEffect(() => {
     props.onPublishedDefinitionChange?.(publishedDefinition);
   }, [props.onPublishedDefinitionChange, publishedDefinition]);
   const questionnaireEditorLocked = publishedDefinition;
@@ -2091,7 +2184,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     publicResponseEntries?: QuestionnaireBlindResponseEntry[];
     provisionalResponseEntries?: QuestionnaireProvisionalResponseEntry[];
     publicDecisionEntries?: QuestionnaireSubmissionDecisionEntry[];
-    verifiedResponseIds?: Iterable<string>;
+    proofVerdicts?: Iterable<readonly [string, QuestionnaireBlindProofVerdict]>;
     resultEvents: NostrEvent[];
     diagnostics?: {
       definition: { mode: "filtered" | "kind_only_fallback"; filteredCount: number; kindOnlyCount: number };
@@ -2139,7 +2232,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     const resultSummary = [...resultEvents]
       .sort((left, right) => right.created_at - left.created_at)
       .map((event) => parseQuestionnaireResultSummaryEvent(event))
-      .find((summary) => Boolean(summary))
+      .find((summary) => Boolean(summary) && !questionnaireResultSummaryIsPremature(summary, definition))
       ?? null;
     const publicResponseEntries = (input.publicResponseEntries ?? [])
       .filter((entry) => entry.response.questionnaireId === activeQuestionnaireId);
@@ -2179,8 +2272,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         : unixTimestampToIso(definition.closeAt);
       upsertElectionSummary({
         electionId: definition.questionnaireId,
-        title: definition.title,
-        description: definition.description ?? "",
+        title: resolveLocalised(definition.title, "en"),
+        description: resolveLocalised(definition.description ?? "", "en"),
         state: summaryState,
         openedAt: unixTimestampToIso(definition.openAt) ?? existingSummary?.openedAt ?? null,
         closedAt: stateClosedAt,
@@ -2199,7 +2292,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       const admissions = evaluateQuestionnaireBlindAdmissions({
         entries: publicResponseEntries,
         decisionEntries: publicDecisionEntries,
-        verifiedResponseIds: input.verifiedResponseIds,
+        proofVerdicts: input.proofVerdicts,
         requireVerifiedProofs: true,
       });
       const acceptedFromSubmissions = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({
@@ -2328,7 +2421,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2339,7 +2432,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -2401,7 +2494,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
           );
           const cachedDefinitionTitle = cachedDefinition
             && cachedDefinitionBelongsToCoordinator
-            ? cachedDefinition.title?.trim() ?? ""
+            ? resolveLocalised(cachedDefinition.title, "en").trim()
             : "";
           if (summary.state !== "draft" && cachedDefinitionBelongsToCoordinator) {
             publishedIds.add(summaryId);
@@ -2426,7 +2519,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
             const parsedId = parsed.questionnaireId.trim();
             ids.add(parsedId);
             publishedIds.add(parsedId);
-            const eventTitle = parsed.title.trim();
+            const eventTitle = resolveLocalised(parsed.title, "en").trim();
             const createdAt = Number(event.created_at ?? parsed.createdAt ?? 0);
             const existingCreatedAt = eventCreatedAtById.get(parsedId);
             if (Number.isFinite(createdAt) && (!Number.isFinite(existingCreatedAt) || createdAt < (existingCreatedAt ?? Number.MAX_SAFE_INTEGER))) {
@@ -2499,7 +2592,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
           );
           const cachedDefinitionTitle = cachedDefinition
             && cachedDefinitionBelongsToCoordinator
-            ? cachedDefinition.title?.trim() ?? ""
+            ? resolveLocalised(cachedDefinition.title, "en").trim()
             : "";
           if (summary.state !== "draft" && cachedDefinitionBelongsToCoordinator) {
             publishedIds.add(summaryId);
@@ -2671,7 +2764,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         .filter((entry) => entry.definition?.questionnaireId === id)
         .sort((left, right) => Number(right.event.created_at ?? right.definition?.createdAt ?? 0) - Number(left.event.created_at ?? left.definition?.createdAt ?? 0))[0]
         ?.definition ?? null;
-      const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+      const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
         entries: publicResponseFetch,
         publicKey: latestDefinitionForVerification?.blindSigningPublicKey ?? null,
       });
@@ -2682,7 +2775,7 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
         publicResponseEntries: publicResponseFetch,
         provisionalResponseEntries: provisionalResponseFetch,
         publicDecisionEntries: publicDecisionFetch,
-        verifiedResponseIds,
+        proofVerdicts,
         resultEvents: resultFetch.events,
         diagnostics: {
           definition: definitionFetch.diagnostics,
@@ -2952,6 +3045,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       generatedWorkerCoordinatorNpub,
       generalInvitePowEnabled,
       generalInvitePowDifficulty,
+      windowedPublicationEnabled,
+      finalizationGraceHours,
       questionnaireRelays: questionnaireRelaysInput,
     };
     window.localStorage.setItem(
@@ -2974,6 +3069,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
     generatedWorkerCoordinatorNpub,
     generalInvitePowDifficulty,
     generalInvitePowEnabled,
+    windowedPublicationEnabled,
+    finalizationGraceHours,
     questionnaireRelaysInput,
     questionnaireId,
     questions,
@@ -2996,14 +3093,16 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
 
     const closeDurationSeconds = definitionCloseDurationSeconds(activePublishedDefinition);
     const hasCloseTimer = closeDurationSeconds > 0 && closeDurationSeconds < QUESTIONNAIRE_TIMER_DISABLED_CLOSE_SECONDS;
-    setTitle(activePublishedDefinition.title);
-    setDescription(activePublishedDefinition.description ?? "");
+    setTitle(toLocalisableText(activePublishedDefinition.title));
+    setDescription(toLocalisableText(activePublishedDefinition.description ?? ""));
     setCloseTimerEnabled(hasCloseTimer);
     setCloseAfterMinutes(hasCloseTimer ? String(Math.max(1, Math.round(closeDurationSeconds / 60))) : QUESTIONNAIRE_TIMER_FALLBACK_MINUTES);
     setCloseTimerUnit("minutes");
     setVoterGroups(normaliseStoredVoterGroups(activePublishedDefinition.voterGroups));
     setGeneralInvitePowEnabled((activePublishedDefinition.generalInvitePowDifficulty ?? 0) > 0);
     setGeneralInvitePowDifficulty(String(activePublishedDefinition.generalInvitePowDifficulty ?? 8));
+    setWindowedPublicationEnabled(activePublishedDefinition.publicationMode === "windowed");
+    setFinalizationGraceHours(String(Math.round((activePublishedDefinition.finalizationGraceSeconds ?? 86_400) / 3600)));
     setQuestions(normaliseStoredQuestions(activePublishedDefinition.questions));
     const relayInput = formatQuestionnaireRelayInputFromDefinition(activePublishedDefinition);
     props.onQuestionnaireRelaysInputChange?.(relayInput);
@@ -3194,19 +3293,28 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     if (generalInvitePowEnabled && (!Number.isInteger(powDifficulty) || powDifficulty < 0 || powDifficulty > 24)) {
       return null;
     }
+    const graceHours = Number.parseFloat(finalizationGraceHours);
+    if (
+      windowedPublicationEnabled
+      && (!Number.isFinite(graceHours) || graceHours < 0 || graceHours * 3600 > QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS)
+    ) {
+      return null;
+    }
     return buildDefinition({
       questionnaireId: questionnaireId.trim(),
       coordinatorPubkey: coordinatorNpub,
-      title: title.trim(),
-      description: description.trim(),
+      title: trimLocalisableText(title),
+      description: trimLocalisableText(description),
       closeAfterMinutes: closeMinutes,
       questionnaireRelays: questionnaireRelayMetadata,
       voterGroups,
       questions,
       blindSigningPublicKey: effectiveBlindSigningPublicKey ?? null,
       generalInvitePowDifficulty: generalInvitePowEnabled ? powDifficulty : 0,
+      publicationMode: windowedPublicationEnabled ? "windowed" : "immediate",
+      finalizationGraceSeconds: windowedPublicationEnabled ? Math.floor(graceHours * 3600) : undefined,
     });
-  }, [closeAfterMinutes, closeTimerEnabled, closeTimerUnit, coordinatorNpub, description, effectiveBlindSigningPublicKey, generalInvitePowDifficulty, generalInvitePowEnabled, questionnaireId, questionnaireRelayMetadata, questions, title, voterGroups]);
+  }, [closeAfterMinutes, closeTimerEnabled, closeTimerUnit, coordinatorNpub, description, effectiveBlindSigningPublicKey, finalizationGraceHours, generalInvitePowDifficulty, generalInvitePowEnabled, questionnaireId, questionnaireRelayMetadata, questions, title, voterGroups, windowedPublicationEnabled]);
 
   const selectedWorkerStatus = useMemo(() => {
     const workerNpub = normaliseWorkerNpub(delegatedWorkerNpub);
@@ -3338,7 +3446,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   }
   const lastParticipantCountPublishKeyRef = useRef("");
 
-  const titleReady = title.trim().length > 0;
+  const titleReady = resolveLocalised(title, "en").trim().length > 0;
   const hasQuestion = questions.length > 0;
   const hasKnownVoter = (props.knownVoterCount ?? 0) > 0;
   const questionsValid = questions.length > 0 && questions.every((question) => isQuestionDraftValid(question));
@@ -3414,12 +3522,12 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           : currentState === "open"
           ? "Open"
           : "Draft";
-  const checklistDescriptionAdded = description.trim().length > 0;
+  const checklistDescriptionAdded = resolveLocalised(description, "en").trim().length > 0;
   const readinessItems = useMemo<QuestionnaireReadinessItem[]>(() => ([
     {
       id: "basics",
-      label: "Title & Description",
-      shortLabel: "Info",
+      label: t("readinessTitleDescription"),
+      shortLabel: t("readinessInfo"),
       complete: titleReady && checklistDescriptionAdded,
       stageLabel: "1",
       group: "questionnaire",
@@ -3427,8 +3535,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "answers",
-      label: "Add a Question",
-      shortLabel: "Questions",
+      label: t("actionAddQuestion"),
+      shortLabel: t("readinessQuestions"),
       complete: questionsValid,
       stageLabel: "2",
       group: "questionnaire",
@@ -3436,8 +3544,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "publish",
-      label: "Published",
-      shortLabel: "Pub",
+      label: t("readinessPublished"),
+      shortLabel: t("readinessPub"),
       complete: Boolean(publishedDefinition),
       stageLabel: "3",
       group: "session",
@@ -3445,8 +3553,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "proxy",
-      label: "Proxy Setup",
-      shortLabel: "Proxy",
+      label: t("readinessProxySetup"),
+      shortLabel: t("readinessProxy"),
       complete: Boolean(activeWorkerDelegation),
       disabled: !publishedDefinition,
       optional: true,
@@ -3456,15 +3564,15 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     },
     {
       id: "invite",
-      label: "Results & Voters",
-      shortLabel: "Voters",
+      label: t("readinessResultsVoters"),
+      shortLabel: t("readinessVoters"),
       complete: knownVoterCount > 0 || displayAcceptedCount > 0,
       disabled: !publishedDefinition,
       stageLabel: "4",
       group: "session",
       action: "invite_voters",
     },
-  ]), [activeWorkerDelegation, checklistDescriptionAdded, displayAcceptedCount, knownVoterCount, publishedDefinition, questionsValid, titleReady]);
+  ]), [activeWorkerDelegation, checklistDescriptionAdded, displayAcceptedCount, knownVoterCount, publishedDefinition, questionsValid, titleReady, t]);
   useEffect(() => {
     props.onReadinessChange?.(readinessItems);
   }, [props.onReadinessChange, readinessItems]);
@@ -3483,10 +3591,10 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   const questionnaireOptionLabel = (id: string) => {
     const selectedId = questionnaireId.trim();
     const selectedPublishedTitle = activePublishedDefinition?.questionnaireId === selectedId
-      ? activePublishedDefinition.title.trim()
+      ? resolveLocalised(activePublishedDefinition.title, "en").trim()
       : "";
     const selectedDraftTitle = view === "build" && id === selectedId
-      ? title.trim()
+      ? resolveLocalised(title, "en").trim()
       : "";
     const availableTitle = availableQuestionnaireTitles[id]?.trim() ?? "";
     if (view === "build" && id === selectedId) {
@@ -3618,7 +3726,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             score: optionScores.get(option.optionId) ?? 0,
             firstChoiceCount: rankCounts.get(option.optionId)?.get(question.options.length) ?? 0,
           }))
-          .sort((left, right) => right.score - left.score || left.label.localeCompare(right.label));
+          .sort((left, right) => right.score - left.score || resolveLocalised(left.label, "en").localeCompare(resolveLocalised(right.label, "en")));
         return {
           questionId: question.questionId,
           index,
@@ -3679,10 +3787,10 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
   const canExportResults = currentState === "results_published" && Boolean(activePublishedDefinition);
   const showNewRoundPublishOnly = isNewRoundMode && !publishedDefinition;
   const primaryPublishAction: QuestionnairePrimaryPublishAction = !showNewRoundPublishOnly && !publishedDefinition
-    ? { label: isDefinitionPublishInFlight ? "Going live..." : "Go Live", disabled: !canPublishDraft || isDefinitionPublishInFlight }
+    ? { label: isDefinitionPublishInFlight ? t("actionGoingLive") : t("actionGoLive"), disabled: !canPublishDraft || isDefinitionPublishInFlight }
     : publishedDefinition && currentState !== "results_published"
       ? {
-        label: currentState === "open" ? "Close & Publish" : "Publish results",
+        label: currentState === "open" ? t("actionCloseAndPublish") : t("actionPublishResults"),
         disabled: closeAndPublishButtonDisabled,
       }
       : null;
@@ -3816,8 +3924,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         const publicKey = toQuestionnaireBlindPublicKey(privateKey);
         const election = {
           electionId: definitionToPublish.questionnaireId,
-          title: definitionToPublish.title,
-          description: definitionToPublish.description ?? "",
+          title: resolveLocalised(definitionToPublish.title, "en"),
+          description: resolveLocalised(definitionToPublish.description ?? "", "en"),
           state: "draft" as const,
           openedAt: null,
           closedAt: null,
@@ -3907,8 +4015,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         storeCachedQuestionnaireDefinition(definitionToPublish);
         upsertElectionSummary({
           electionId: definitionToPublish.questionnaireId,
-          title: definitionToPublish.title,
-          description: definitionToPublish.description ?? "",
+          title: resolveLocalised(definitionToPublish.title, "en"),
+          description: resolveLocalised(definitionToPublish.description ?? "", "en"),
           state: "open",
           openedAt: new Date(definitionToPublish.openAt * 1000).toISOString(),
           closedAt: new Date(definitionToPublish.closeAt * 1000).toISOString(),
@@ -3952,6 +4060,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             forceConfigSync: true,
           });
         }
+        props.onDemoPublished?.();
       } else {
         setStatus("Vote publish failed.");
         await refresh();
@@ -4058,8 +4167,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         if (summaryState && (definition || existingSummary)) {
           upsertElectionSummary({
             electionId: id,
-            title: definition?.title ?? existingSummary?.title ?? id,
-            description: definition?.description ?? existingSummary?.description ?? "",
+            title: definition ? resolveLocalised(definition.title, "en") : existingSummary?.title ?? id,
+            description: definition ? resolveLocalised(definition.description ?? "", "en") : existingSummary?.description ?? "",
             state: summaryState,
             openedAt: definition ? unixTimestampToIso(definition.openAt) : existingSummary?.openedAt ?? null,
             closedAt: state === "closed" || state === "results_published"
@@ -4096,6 +4205,14 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
     const definition = activePublishedDefinition;
     if (!definition || !coordinatorNsec.trim() || !coordinatorNpub.trim()) {
       setStatus("Load the vote before publishing results.");
+      return;
+    }
+
+    const resultsAllowedAt = questionnaireGraceUntil(definition);
+    if (resultsAllowedAt !== null && nowUnix() < resultsAllowedAt) {
+      setStatus(
+        `Final results are held until the finalization grace ends at ${new Date(resultsAllowedAt * 1000).toLocaleString()} so late windowed releases can still be counted.`,
+      );
       return;
     }
 
@@ -4138,14 +4255,14 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             relays: definition.questionnaireRelays ?? questionnaireRelayPublishHints,
           }).catch(() => []),
         ]);
-        const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+        const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
           entries: publicResponses,
           publicKey: definition.blindSigningPublicKey ?? effectiveBlindSigningPublicKey ?? null,
         });
         const admissions = evaluateQuestionnaireBlindAdmissions({
           entries: publicResponses,
           decisionEntries,
-          verifiedResponseIds,
+          proofVerdicts,
           requireVerifiedProofs: true,
         });
         const acceptedResponses = admissions.accepted.map((entry) => publicBlindResponseToAcceptedResponse({
@@ -5067,7 +5184,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             {currentState === "open" ? "Close and publish?" : "Publish results?"}
           </h2>
           <p id='publish-confirm-description' className='simple-voter-note'>
-            This will publish the current result summary for {activePublishedDefinition?.title?.trim() || "this questionnaire"}.
+            This will publish the current result summary for {resolveLocalised(activePublishedDefinition?.title ?? "", "en").trim() || "this questionnaire"}.
           </p>
           <div className='simple-new-identity-confirm-warning simple-publish-confirm-summary'>
             <span className='simple-new-identity-confirm-warning-icon' aria-hidden='true'>i</span>
@@ -5127,8 +5244,8 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           variant='session'
           questionnaire={activePublishedDefinition ? {
             questionnaireId: activePublishedDefinition.questionnaireId,
-            title: activePublishedDefinition.title || "Untitled questionnaire",
-            description: activePublishedDefinition.description ?? "",
+            title: resolveLocalised(activePublishedDefinition.title, "en") || "Untitled questionnaire",
+            description: resolveLocalised(activePublishedDefinition.description ?? "", "en"),
             createdAt: activePublishedDefinition.createdAt,
             openAt: activePublishedDefinition.openAt,
             closeAt: activePublishedDefinition.closeAt,
@@ -5151,6 +5268,11 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           coordinatorText={dashboardCoordinatorIdentity.text}
           publishedAtLabel='Published'
           publishedAtTime={activePublishedDefinition?.createdAt ?? null}
+          actions={props.onOpenObserver ? (
+            <UiButton icon='view' className='simple-voter-secondary' onPress={props.onOpenObserver}>
+              Open observer
+            </UiButton>
+          ) : null}
           emptyQuestionSummaryText='No question results yet.'
           emptySelectionText=''
           emptyResponsesText='No submitted responses found for this questionnaire yet.'
@@ -5175,7 +5297,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
           <div className='simple-questionnaire-build-main'>
               {!isProxyBuildPage ? (
                 <header className='simple-questionnaire-editor-title'>
-                  <h1>{title.trim() || "Untitled questionnaire"}</h1>
+                  <h1>{resolveLocalised(title, "en").trim() || "Untitled questionnaire"}</h1>
                   <span>{publishedDefinition ? buildStateLabel : "Draft"}</span>
                 </header>
               ) : null}
@@ -5184,15 +5306,15 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         <section id='questionnaire-basic-section' className='simple-questionnaire-build-cardlet'>
       <div className='simple-questionnaire-identity-grid'>
         <div className='simple-questionnaire-form-field'>
-          <UiTextField
+          <LocalisedTextTranslations
+            value={title}
+            onChange={setTitle}
             label='Title'
+            ariaLabel='Title'
+            placeholder='Vote name'
             inputClassName='simple-voter-input'
-            inputProps={{
-              id: 'questionnaire-title',
-              value: title,
-              placeholder: 'Vote name',
-              onChange: (event) => setTitle(event.target.value),
-            }}
+            idPrefix='questionnaire-title'
+            disabled={questionnaireEditorLocked}
           />
         </div>
         <div className='simple-questionnaire-id-panel'>
@@ -5222,16 +5344,17 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
       </div>
 
       <div className='simple-questionnaire-form-field'>
-        <UiTextArea
+        <LocalisedTextTranslations
+          value={description}
+          onChange={setDescription}
           label='Description'
-          textAreaClassName='simple-voter-input'
-          textAreaProps={{
-            id: 'questionnaire-description',
-            rows: 3,
-            value: description,
-            placeholder: 'Short description',
-            onChange: (event) => setDescription(event.target.value),
-          }}
+          ariaLabel='Description'
+          placeholder='Short description'
+          inputClassName='simple-voter-input'
+          textArea
+          rows={3}
+          idPrefix='questionnaire-description'
+          disabled={questionnaireEditorLocked}
         />
       </div>
         </section>
@@ -5345,6 +5468,28 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
             <span>Off</span><span>Instant</span><span>~1 sec</span><span>~10 sec</span><span>~1 min</span>
           </div>
         </div>
+        <UiSwitch
+          className={`simple-questionnaire-close-timer-toggle${windowedPublicationEnabled ? " is-on" : ""}`}
+          label='Windowed publication (hold ballots until close)'
+          isSelected={windowedPublicationEnabled}
+          onChange={setWindowedPublicationEnabled}
+        />
+        {windowedPublicationEnabled ? (
+          <div className='simple-voter-field-stack simple-voter-field-stack-tight'>
+            <label className='simple-voter-label' htmlFor='finalization-grace-hours'>Finalization grace after close (hours)</label>
+            <input
+              id='finalization-grace-hours'
+              className='simple-voter-input'
+              type='number'
+              min={0}
+              max={QUESTIONNAIRE_MAX_FINALIZATION_GRACE_SECONDS / 3600}
+              step={1}
+              value={finalizationGraceHours}
+              onChange={(event) => setFinalizationGraceHours(event.target.value)}
+            />
+            <p className='simple-voter-note'>Ballots are held locally and released together at close, then accepted for this long so late releases still count. Provisional live charts are disabled for the round.</p>
+          </div>
+        ) : null}
         </section>
       </section>
       </section>
@@ -5417,7 +5562,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
         {questions.map((question, index) => {
           const canMoveUp = index > 0;
           const canMoveDown = index < questions.length - 1;
-          const promptMissing = !question.prompt.trim();
+          const promptMissing = !resolveLocalised(question.prompt, "en").trim();
           const questionIncomplete = !isQuestionDraftValid(question);
           const questionFooter = (
             <div className='simple-questionnaire-question-footer'>
@@ -5454,7 +5599,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                     onChange={(event) => setQuestionType(index, event.target.value as QuestionnaireQuestionDraft["type"])}
                   >
                     {QUESTION_TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
+                      <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
                     ))}
                   </UiSelect>
                   <UiSelect
@@ -5507,47 +5652,169 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   </div>
                 </div>
               </div>
-              <UiTextField
-                inputClassName={`simple-voter-input${promptMissing ? " is-missing" : ""}`}
-                inputProps={{
-                  id: `question-prompt-${index}`,
-                  'aria-label': `Question ${index + 1} prompt`,
-                  'aria-invalid': promptMissing || undefined,
-                  value: question.prompt,
-                  placeholder: 'Question prompt',
-                  onChange: (event) => {
-                    const nextValue = event.target.value;
-                    updateQuestion(index, (entry) => ({ ...entry, prompt: nextValue }));
-                  },
+              <LocalisedTextTranslations
+                value={question.prompt}
+                onChange={(next) => {
+                  updateQuestion(index, (entry) => ({ ...entry, prompt: next }));
                 }}
+                ariaLabel={`Question ${index + 1} prompt`}
+                placeholder='Question prompt'
+                inputClassName={`simple-voter-input${promptMissing ? " is-missing" : ""}`}
+                invalid={promptMissing}
+                idPrefix={`question-prompt-${index}`}
+                disabled={questionnaireEditorLocked}
               />
+              {/* Conditional display (showIf) configuration */}
+              <div className='simple-questionnaire-conditional-config'>
+                <UiSelect
+                  selectClassName='simple-voter-input simple-questionnaire-visibility-dropdown'
+                  aria-label={`Question ${index + 1} visibility`}
+                  value={question.showIf ? "conditional" : "always"}
+                  onChange={(event) => {
+                    const mode = event.target.value;
+                    if (mode === "always") {
+                      updateQuestion(index, (entry) => withShowIf(entry, null));
+                    } else {
+                      // Switching to conditional: pick first earlier question as default dependency
+                      const earlier = earlierQuestions(questions, index);
+                      if (earlier.length === 0) return;
+                      const firstDep = earlier[0];
+                      updateQuestion(index, (entry) => withShowIf(entry, {
+                        dependsOnQuestionId: firstDep.questionId,
+                        requiredAnswer: defaultRequiredAnswerForQuestion(firstDep),
+                      }));
+                    }
+                  }}
+                >
+                  <option value='always'>Show always</option>
+                  {earlierQuestions(questions, index).length > 0 ? (
+                    <option value='conditional'>Show if...</option>
+                  ) : null}
+                </UiSelect>
+                {question.showIf ? (
+                  <>
+                    <UiSelect
+                      selectClassName='simple-voter-input simple-questionnaire-dependency-dropdown'
+                      aria-label={`Question ${index + 1} depends on`}
+                      value={question.showIf.dependsOnQuestionId}
+                      onChange={(event) => {
+                        const depId = event.target.value;
+                        const depQuestion = questions.find((q) => q.questionId === depId);
+                        if (!depQuestion) return;
+                        updateQuestion(index, (entry) => withShowIf(entry, {
+                          dependsOnQuestionId: depId,
+                          requiredAnswer: defaultRequiredAnswerForQuestion(depQuestion),
+                        }));
+                      }}
+                    >
+                      {earlierQuestions(questions, index).map((dep) => (
+                        <option key={dep.questionId} value={dep.questionId}>
+                          {questionDependencyLabel(dep)}
+                        </option>
+                      ))}
+                    </UiSelect>
+                    {(() => {
+                      const depQuestion = questions.find((q) => q.questionId === question.showIf?.dependsOnQuestionId);
+                      if (!depQuestion) return null;
+                      const requiredAnswer = question.showIf.requiredAnswer;
+
+                      if (depQuestion.type === "yes_no") {
+                        const yesValue = requiredAnswer.answerType === "yes_no" ? requiredAnswer.value : true;
+                        return (
+                          <div className='simple-questionnaire-conditional-answer' role='radiogroup' aria-label={`Question ${index + 1} required answer`}>
+                            <label className='simple-questionnaire-conditional-radio'>
+                              <input
+                                type='radio'
+                                name={`question-${index}-conditional-answer`}
+                                aria-label={`Question ${index + 1} required answer Yes`}
+                                checked={yesValue === true}
+                                onChange={() => {
+                                  updateQuestion(index, (entry) => withShowIf(entry, {
+                                    dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                    requiredAnswer: { answerType: "yes_no", value: true },
+                                  }));
+                                }}
+                              />
+                              Yes
+                            </label>
+                            <label className='simple-questionnaire-conditional-radio'>
+                              <input
+                                type='radio'
+                                name={`question-${index}-conditional-answer`}
+                                aria-label={`Question ${index + 1} required answer No`}
+                                checked={yesValue === false}
+                                onChange={() => {
+                                  updateQuestion(index, (entry) => withShowIf(entry, {
+                                    dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                    requiredAnswer: { answerType: "yes_no", value: false },
+                                  }));
+                                }}
+                              />
+                              No
+                            </label>
+                          </div>
+                        );
+                      }
+
+                      if (depQuestion.type === "multiple_choice") {
+                        const selectedIds = requiredAnswer.answerType === "multiple_choice" ? requiredAnswer.selectedOptionIds : [];
+                        return (
+                          <div className='simple-questionnaire-conditional-options'>
+                            {depQuestion.options.map((opt) => (
+                              <label key={opt.optionId} className='simple-questionnaire-conditional-checkbox'>
+                                <input
+                                  type='checkbox'
+                                  aria-label={`Question ${index + 1} require ${opt.optionId}`}
+                                  checked={selectedIds.includes(opt.optionId)}
+                                  onChange={(event) => {
+                                    const next = event.target.checked
+                                      ? [...selectedIds, opt.optionId]
+                                      : selectedIds.filter((id) => id !== opt.optionId);
+                                    updateQuestion(index, (entry) => withShowIf(entry, {
+                                      dependsOnQuestionId: question.showIf!.dependsOnQuestionId,
+                                      requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: next },
+                                    }));
+                                  }}
+                                />
+                                {resolveLocalised(opt.label, "en") || opt.optionId}
+                              </label>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      // For rank / free_text dependencies, show a note
+                      return <p className='simple-questionnaire-conditional-note'>This question type does not support conditional display.</p>;
+                    })()}
+                  </>
+                ) : null}
+              </div>
               {question.type === "multiple_choice" ? (
                 <div className='simple-voter-field-stack simple-voter-field-stack-tight simple-questionnaire-option-stack'>
                   <div className='simple-questionnaire-options-editor'>
                     <div className='simple-questionnaire-options-list'>
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
-                          <UiTextField
-                            inputClassName={`simple-voter-input${!option.label.trim() ? " is-missing" : ""}`}
-                            inputProps={{
-                              value: option.label,
-                              "aria-label": `Option ${optionIndex + 1}`,
-                              "aria-invalid": !option.label.trim() || undefined,
-                              onChange: (event) => {
-                                const nextLabel = event.target.value;
-                                updateQuestion(index, (entry) => {
-                                  if (entry.type !== "multiple_choice") {
-                                    return entry;
-                                  }
-                                  return bumpQuestionBallotSlotVersion({
-                                    ...entry,
-                                    options: entry.options.map((entryOption, entryOptionIndex) => (
-                                      entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
-                                    )),
-                                  });
+                          <LocalisedTextTranslations
+                            value={option.label}
+                            onChange={(nextLabel) => {
+                              updateQuestion(index, (entry) => {
+                                if (entry.type !== "multiple_choice") {
+                                  return entry;
+                                }
+                                return bumpQuestionBallotSlotVersion({
+                                  ...entry,
+                                  options: entry.options.map((entryOption, entryOptionIndex) => (
+                                    entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
+                                  )),
                                 });
-                              },
+                              });
                             }}
+                            ariaLabel={`Option ${optionIndex + 1}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
+                            invalid={!resolveLocalised(option.label, "en").trim()}
+                            idPrefix={`question-${index}-option-${optionIndex}`}
+                            disabled={questionnaireEditorLocked}
                           />
                           <UiButton
                             icon='delete'
@@ -5605,27 +5872,26 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                     <div className='simple-questionnaire-options-list'>
                       {question.options.map((option, optionIndex) => (
                         <div key={option.optionId} className='simple-questionnaire-option-row'>
-                          <UiTextField
-                            inputClassName={`simple-voter-input${!option.label.trim() ? " is-missing" : ""}`}
-                            inputProps={{
-                              value: option.label,
-                              "aria-label": `Rank option ${optionIndex + 1}`,
-                              "aria-invalid": !option.label.trim() || undefined,
-                              onChange: (event) => {
-                                const nextLabel = event.target.value;
-                                updateQuestion(index, (entry) => {
-                                  if (entry.type !== "rank") {
-                                    return entry;
-                                  }
-                                  return bumpQuestionBallotSlotVersion({
-                                    ...entry,
-                                    options: entry.options.map((entryOption, entryOptionIndex) => (
-                                      entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
-                                    )),
-                                  });
+                          <LocalisedTextTranslations
+                            value={option.label}
+                            onChange={(nextLabel) => {
+                              updateQuestion(index, (entry) => {
+                                if (entry.type !== "rank") {
+                                  return entry;
+                                }
+                                return bumpQuestionBallotSlotVersion({
+                                  ...entry,
+                                  options: entry.options.map((entryOption, entryOptionIndex) => (
+                                    entryOptionIndex === optionIndex ? { ...entryOption, label: nextLabel } : entryOption
+                                  )),
                                 });
-                              },
+                              });
                             }}
+                            ariaLabel={`Rank option ${optionIndex + 1}`}
+                            inputClassName={`simple-voter-input${!resolveLocalised(option.label, "en").trim() ? " is-missing" : ""}`}
+                            invalid={!resolveLocalised(option.label, "en").trim()}
+                            idPrefix={`question-${index}-rank-option-${optionIndex}`}
+                            disabled={questionnaireEditorLocked}
                           />
                           <UiButton
                             icon='delete'
@@ -5757,7 +6023,7 @@ function setQuestionType(index: number, type: QuestionnaireQuestionDraft["type"]
                   <h3>Questionnaire summary</h3>
                   <ul>
                     <li className={titleReady ? "is-ready" : ""}><UiIcon name='check' />Title</li>
-                    <li className={description.trim() ? "is-ready" : ""}><UiIcon name='check' />Description</li>
+                    <li className={resolveLocalised(description, "en").trim() ? "is-ready" : ""}><UiIcon name='check' />Description</li>
                     <li className={questions.length > 0 && questions.every(isQuestionDraftValid) ? "is-ready" : ""}><UiIcon name='check' />{questions.length} {questions.length === 1 ? "Question" : "Questions"}</li>
                     <li className={voterGroups.length > 0 ? "is-ready" : ""}><UiIcon name='check' />{voterGroups.length} {voterGroups.length === 1 ? "Voter Group" : "Voter Groups"}</li>
                     <li className={canPublishDraft ? "is-ready" : ""}><UiIcon name='check' />Ready to publish</li>

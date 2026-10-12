@@ -932,14 +932,48 @@ export async function verifySimplePublicShardProof(
   }
 }
 
+export type SimpleShardDeriveOptions = {
+  /**
+   * Minimum number of DISTINCT coordinator signatures required before a
+   * combined token may be derived. Defaults to `SIMPLE_MIN_SIGNER_THRESHOLD`
+   * (1), the shipped single-coordinator semantics: one valid share from the
+   * round's coordinator is enough. Pass `threshold: 2` (or higher) to require
+   * that many independent coordinators — the multi-coordinator capability is
+   * implemented and tested but not yet enabled by any production caller.
+   * `0` opts out of the distinct-coordinator check (legacy escape hatch).
+   */
+  threshold?: number;
+  length?: number;
+};
+
+/**
+ * Shipped default shard-derive threshold: a single coordinator's valid share
+ * is sufficient (`t = 1`), matching upstream/main behaviour for legacy
+ * single-coordinator rounds. Multi-coordinator thresholds (`t >= 2`) are
+ * supported by the derive layer as an explicit option and are exercised in
+ * tests, but are not yet enforced in production.
+ */
+export const SIMPLE_MIN_SIGNER_THRESHOLD = 1;
+
 export async function deriveTokenIdFromSimpleShardCertificates(
   certificates: SimpleShardCertificate[],
-  length = 20,
+  options: SimpleShardDeriveOptions | number = {},
 ): Promise<string | null> {
+  const { threshold = SIMPLE_MIN_SIGNER_THRESHOLD, length = 20 } =
+    typeof options === "number" ? { length: options } : options;
   const validCertificates = certificates
     .map((certificate) => parseSimpleShardCertificate(certificate))
     .filter((certificate): certificate is ParsedSimpleShardCertificate => certificate !== null);
   if (validCertificates.length === 0) {
+    return null;
+  }
+
+  if (
+    !meetsSignerThreshold(
+      validCertificates.map((certificate) => certificate.coordinatorNpub),
+      threshold,
+    )
+  ) {
     return null;
   }
 
@@ -958,12 +992,23 @@ export async function deriveTokenIdFromSimpleShardCertificates(
 
 export async function deriveTokenIdFromSimplePublicShardProofs(
   proofs: SimplePublicShardProof[],
-  length = 20,
+  options: SimpleShardDeriveOptions | number = {},
 ): Promise<string | null> {
+  const { threshold = SIMPLE_MIN_SIGNER_THRESHOLD, length = 20 } =
+    typeof options === "number" ? { length: options } : options;
   const validProofs = proofs
     .map((proof) => parseSimplePublicShardProof(proof))
     .filter((proof): proof is ParsedSimplePublicShardProof => proof !== null);
   if (validProofs.length === 0) {
+    return null;
+  }
+
+  if (
+    !meetsSignerThreshold(
+      validProofs.map((proof) => proof.coordinatorNpub),
+      threshold,
+    )
+  ) {
     return null;
   }
 
@@ -983,6 +1028,25 @@ export async function deriveTokenIdFromSimplePublicShardProofs(
     .join("|");
   const tokenId = await sha256Hex(`${uniqueTokenMessages[0]}:${shareDescriptor}`);
   return tokenId.slice(0, length);
+}
+
+/**
+ * Returns true when at least `threshold` DISTINCT coordinators have each
+ * contributed a valid share. `threshold` defaults to 1 (single-coordinator
+ * rounds — the shipped behaviour). An explicit multi-coordinator threshold
+ * (e.g. 2) requires that many distinct coordinator identities, so a lone
+ * coordinator — or several shares from the same coordinator — cannot satisfy
+ * it. `threshold <= 0` disables the check entirely (legacy opt-out).
+ */
+function meetsSignerThreshold(coordinatorNpubs: string[], threshold: number): boolean {
+  if (threshold <= 0) {
+    return true;
+  }
+
+  const distinctCoordinators = new Set(
+    coordinatorNpubs.filter((npub) => npub.trim().length > 0),
+  );
+  return distinctCoordinators.size >= threshold;
 }
 
 export function getShardCertificateCoordinatorNpub(coordinatorNsec: string): string | null {

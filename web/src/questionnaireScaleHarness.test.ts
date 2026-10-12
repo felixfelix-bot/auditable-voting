@@ -1,4 +1,4 @@
-import type { Filter, NostrEvent } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, type Filter, type NostrEvent } from "nostr-tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchQuestionnaireBlindResponses,
@@ -54,6 +54,20 @@ vi.mock("./sharedNostrPool", () => ({
   }),
 }));
 
+const responseSecretKey = generateSecretKey();
+const responsePubkeyHex = getPublicKey(responseSecretKey);
+const responseNpub = nip19.npubEncode(responsePubkeyHex);
+const coordinatorSecretKey = generateSecretKey();
+const coordinatorPubkeyHex = getPublicKey(coordinatorSecretKey);
+const coordinatorNpub = nip19.npubEncode(coordinatorPubkeyHex);
+
+// Fixtures now carry real Schnorr signatures (the transport verifies every
+// public event it reads), and signing each event is comparatively expensive.
+// Keep the full 30-round shape and 100 voters for the selected round — the
+// level the assertions care about — while trimming voters in the other rounds
+// (they exist only so filtering and kind-only fallback are non-trivial).
+const OTHER_ROUND_VOTERS = 3;
+
 describe("questionnaire scale harness", () => {
   beforeEach(() => {
     relayState.events = [];
@@ -65,9 +79,11 @@ describe("questionnaire scale harness", () => {
 
   it("reads a selected round from 30 rounds and 100 voters without concurrent public REQs", async () => {
     const roundIds = Array.from({ length: 30 }, (_, index) => `q_scale_${String(index + 1).padStart(2, "0")}`);
+    const selectedRound = roundIds[20];
     let createdAt = 1_800_000_000;
     for (const questionnaireId of roundIds) {
-      for (let voterIndex = 0; voterIndex < 100; voterIndex += 1) {
+      const voterCount = questionnaireId === selectedRound ? 100 : OTHER_ROUND_VOTERS;
+      for (let voterIndex = 0; voterIndex < voterCount; voterIndex += 1) {
         relayState.events.push(makeBlindResponseEvent({
           questionnaireId,
           responseId: `submission_${questionnaireId}_${voterIndex}`,
@@ -84,7 +100,6 @@ describe("questionnaire scale harness", () => {
       relayState.events.push(makeResultEvent({ questionnaireId, createdAt: createdAt-- }));
     }
 
-    const selectedRound = roundIds[20];
     const [responses, decisions, results] = await Promise.all([
       fetchQuestionnaireBlindResponses({
         questionnaireId: selectedRound,
@@ -114,13 +129,15 @@ describe("questionnaire scale harness", () => {
       Array.isArray((filter as Filter & { "#q"?: string[] })["#q"])
       && (filter as Filter & { "#q"?: string[] })["#q"]?.includes(selectedRound)
     ))).toBe(true);
-  });
+  }, 30_000);
 
   it("falls back to paginated kind-only reads when relays do not return tag-filtered events", async () => {
     const roundIds = Array.from({ length: 30 }, (_, index) => `q_scale_fallback_${String(index + 1).padStart(2, "0")}`);
+    const selectedRound = roundIds[20];
     let createdAt = 1_800_010_000;
     for (const questionnaireId of roundIds) {
-      for (let voterIndex = 0; voterIndex < 100; voterIndex += 1) {
+      const voterCount = questionnaireId === selectedRound ? 100 : OTHER_ROUND_VOTERS;
+      for (let voterIndex = 0; voterIndex < voterCount; voterIndex += 1) {
         relayState.events.push(makeBlindResponseEvent({
           questionnaireId,
           responseId: `submission_${questionnaireId}_${voterIndex}`,
@@ -138,7 +155,6 @@ describe("questionnaire scale harness", () => {
     }
     relayState.ignoreQFilters = true;
 
-    const selectedRound = roundIds[20];
     const [responses, decisions, results] = await Promise.all([
       fetchQuestionnaireBlindResponses({
         questionnaireId: selectedRound,
@@ -169,28 +185,25 @@ describe("questionnaire scale harness", () => {
       !Array.isArray((filter as Filter & { "#q"?: string[] })["#q"])
       && filter.kinds?.includes(QUESTIONNAIRE_RESPONSE_BLIND_KIND)
     ))).toBe(true);
-  });
+  }, 30_000);
 });
 
 function baseEvent(input: {
-  id: string;
   kind: number;
+  secretKey: Uint8Array;
   questionnaireId: string;
   createdAt: number;
   content: unknown;
 }): NostrEvent {
-  return {
-    id: input.id,
+  return finalizeEvent({
     kind: input.kind,
-    pubkey: "f".repeat(64),
     created_at: input.createdAt,
     tags: [
       ["q", input.questionnaireId],
       ["questionnaire", input.questionnaireId],
     ],
     content: JSON.stringify(input.content),
-    sig: "0".repeat(128),
-  };
+  }, input.secretKey);
 }
 
 function makeBlindResponseEvent(input: {
@@ -200,8 +213,8 @@ function makeBlindResponseEvent(input: {
   createdAt: number;
 }) {
   return baseEvent({
-    id: `event_${input.responseId}`,
     kind: QUESTIONNAIRE_RESPONSE_BLIND_KIND,
+    secretKey: responseSecretKey,
     questionnaireId: input.questionnaireId,
     createdAt: input.createdAt,
     content: {
@@ -210,7 +223,7 @@ function makeBlindResponseEvent(input: {
       questionnaireId: input.questionnaireId,
       responseId: input.responseId,
       submittedAt: input.createdAt,
-      authorPubkey: "npub1anonymous",
+      authorPubkey: responseNpub,
       tokenNullifier: input.tokenNullifier,
       tokenProof: {
         tokenCommitment: `commitment_${input.responseId}`,
@@ -229,8 +242,8 @@ function makeDecisionEvent(input: {
   createdAt: number;
 }) {
   return baseEvent({
-    id: `decision_${input.submissionId}`,
     kind: QUESTIONNAIRE_SUBMISSION_DECISION_KIND,
+    secretKey: coordinatorSecretKey,
     questionnaireId: input.questionnaireId,
     createdAt: input.createdAt,
     content: {
@@ -242,7 +255,7 @@ function makeDecisionEvent(input: {
       accepted: true,
       reason: "accepted",
       decidedAt: input.createdAt,
-      coordinatorPubkey: "npub1organiser",
+      coordinatorPubkey: coordinatorNpub,
     },
   });
 }
@@ -252,8 +265,8 @@ function makeResultEvent(input: {
   createdAt: number;
 }) {
   return baseEvent({
-    id: `result_${input.questionnaireId}`,
     kind: QUESTIONNAIRE_RESULT_SUMMARY_KIND,
+    secretKey: coordinatorSecretKey,
     questionnaireId: input.questionnaireId,
     createdAt: input.createdAt,
     content: {
@@ -261,7 +274,7 @@ function makeResultEvent(input: {
       eventType: "questionnaire_result_summary",
       questionnaireId: input.questionnaireId,
       createdAt: input.createdAt,
-      coordinatorPubkey: "npub1organiser",
+      coordinatorPubkey: coordinatorNpub,
       acceptedResponseCount: 100,
       rejectedResponseCount: 0,
       questionSummaries: [],

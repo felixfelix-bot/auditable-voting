@@ -12,7 +12,7 @@ import {
   fetchQuestionnaireSubmissionDecisions,
   fetchQuestionnaireResultSummary,
   fetchQuestionnaireState,
-  verifyQuestionnaireBlindResponseProofs,
+  verifyQuestionnaireBlindResponseProofVerdicts,
   type QuestionnaireWorkerDelegationStatus,
 } from "./questionnaireTransport";
 import {
@@ -26,6 +26,7 @@ import {
   type QuestionnaireResultSummary,
   type QuestionnaireStateEvent,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import { decryptQuestionnaireBlindResponseAnswers } from "./questionnaireResponsePublish";
 import {
   parseQuestionnaireBlindResponseEvent,
@@ -381,8 +382,8 @@ export default function SimpleAuditorApp({
          const previousEntry = previousEntriesById.get(entry.event.id);
         entries.push({
           questionnaireId: id,
-          title: entry.definition.title || "Untitled questionnaire",
-          description: entry.definition.description || "",
+          title: resolveLocalised(entry.definition.title, "en") || "Untitled questionnaire",
+          description: resolveLocalised(entry.definition.description ?? "", "en"),
           coordinatorNpub,
           createdAt: Number(entry.event.created_at ?? entry.definition.createdAt ?? 0),
           openAt: Number.isFinite(entry.definition.openAt) ? entry.definition.openAt : null,
@@ -563,14 +564,14 @@ export default function SimpleAuditorApp({
             previous === resolvedDefinitionEntry.event.id ? previous : resolvedDefinitionEntry.event.id
           ));
         }
-        const verifiedResponseIds = await verifyQuestionnaireBlindResponseProofs({
+        const proofVerdicts = await verifyQuestionnaireBlindResponseProofVerdicts({
          entries: responseEntries,
          publicKey: resolvedDefinition?.blindSigningPublicKey ?? null,
       });
       const admissions = evaluateQuestionnaireBlindAdmissions({
         entries: responseEntries,
         decisionEntries,
-        verifiedResponseIds,
+        proofVerdicts,
         requireVerifiedProofs: true,
       });
       const latestState = [...stateEntries]
@@ -661,8 +662,8 @@ export default function SimpleAuditorApp({
          return {
            ...entry,
            ...(definition ? {
-             title: definition.title || "Untitled questionnaire",
-             description: definition.description || "",
+             title: resolveLocalised(definition.title, "en") || "Untitled questionnaire",
+             description: resolveLocalised(definition.description ?? "", "en"),
              coordinatorNpub: normalizeToNpub(definition.coordinatorPubkey),
              createdAt: Number(resolvedDefinitionEntry.event.created_at ?? definition.createdAt ?? 0),
              openAt: Number.isFinite(definition.openAt) ? definition.openAt : null,
@@ -1223,6 +1224,7 @@ export default function SimpleAuditorApp({
             questions: selectedQuestionnaire.questions,
           } : null}
           questionSummaries={displayedQuestionSummaries}
+          resultHash={selectedResultSummary?.resultHash ?? null}
           responseDetails={displayResponseDetails}
           provisionalResponseDetails={selectedProvisionalResponseDetails}
           displayValidCount={displayValidCount}
