@@ -1,7 +1,7 @@
 import { gzipSync, gunzipSync, strFromU8, strToU8 } from "fflate";
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19, nip44, type Filter, type NostrEvent } from "nostr-tools";
 import { publishToRelaysStaggered, queueNostrPublish } from "./nostrPublishQueue";
-import { questionnaireDefinitionHash } from "./questionnaireDefinitionReference";
+import { resolveQuestionnaireDefinitionHash } from "./questionnaireDefinitionReference";
 import {
   sanitiseBlindBallotIssuance,
   sanitiseBlindBallotRequest,
@@ -13,6 +13,7 @@ import {
   sanitiseBlindBallotPlan,
   type BlindBallotRequest,
   type CoordinatorElectionState,
+  type PendingPublicRelease,
   type VoterElectionLocalState,
 } from "./questionnaireOptionA";
 import type {
@@ -61,6 +62,8 @@ const OPTION_A_DM_EXISTENCE_CHECK_MAX_RELAYS = 6;
 const OPTION_A_COMPRESSED_BUNDLE_TYPE = "optiona_compressed_bundle_dm";
 const OPTION_A_COMPRESSED_BUNDLE_ENCODING = "gzip+base64url";
 const OPTION_A_BUNDLE_COMPRESSION_THRESHOLD_BYTES = 8 * 1024;
+const OPTION_A_COMPRESSED_BUNDLE_MAX_BYTES = 256 * 1024;
+const OPTION_A_UNCOMPRESSED_BUNDLE_MAX_BYTES = 1024 * 1024;
 const OPTION_A_BLIND_DM_READ_PRIORITY_RELAYS = [
   "wss://vm-1734.lnvps.cloud/",
   "wss://relay.nostr.net",
@@ -216,6 +219,12 @@ export type OptionAVoterStateSnapshot = {
     decidedAt: string;
     reason?: string | null;
   }>;
+  /**
+   * Windowed releases still waiting for their slot (A1). The responder nsec is
+   * deliberately NOT persisted here: it is re-derived from blindTokenSecrets on
+   * recovery so a leaked snapshot cannot expose the responder identity.
+   */
+  pendingPublicReleases?: Record<string, Omit<PendingPublicRelease, "responseNsec">>;
   lastUpdatedAt: string;
 };
 
@@ -411,6 +420,13 @@ export function parseOptionADmEnvelopeContent(content: string): unknown {
       || typeof wrapper.compressedLength !== "number"
     ) {
       throw new Error("Invalid compressed bundle envelope.");
+    }
+    if (
+      wrapper.compressedLength > OPTION_A_COMPRESSED_BUNDLE_MAX_BYTES
+      || wrapper.originalLength > OPTION_A_UNCOMPRESSED_BUNDLE_MAX_BYTES
+      || wrapper.payload.length > OPTION_A_COMPRESSED_BUNDLE_MAX_BYTES * 2
+    ) {
+      throw new Error("Compressed bundle exceeds the supported size.");
     }
     const compressed = base64UrlToBytes(wrapper.payload);
     if (compressed.length !== wrapper.compressedLength) {
@@ -1070,7 +1086,9 @@ function parseBlindIssuanceDmContent(content: string): BlindBallotIssuance[] | n
           {
             ...issuance,
             definitionHash: issuance.definitionHash ?? bundle.definitionHash ?? (
-              sharedDefinition ? questionnaireDefinitionHash(sharedDefinition) : null
+              sharedDefinition
+                ? resolveQuestionnaireDefinitionHash(issuance.electionId, sharedDefinition)
+                : null
             ),
             definitionEventId: issuance.definitionEventId ?? bundle.definitionEventId ?? null,
             ...(sharedDefinition && !issuance.definition ? { definition: sharedDefinition } : {}),
@@ -2067,7 +2085,9 @@ export async function publishOptionABlindIssuanceDm(input: {
   const issuance = {
     ...inputIssuance,
     definition: undefined,
-    definitionHash: inputIssuance.definitionHash ?? (legacyDefinition ? questionnaireDefinitionHash(legacyDefinition) : null),
+    definitionHash: inputIssuance.definitionHash ?? (legacyDefinition
+      ? resolveQuestionnaireDefinitionHash(inputIssuance.electionId, legacyDefinition)
+      : null),
     definitionEventId: inputIssuance.definitionEventId ?? null,
   };
   return publishEnvelope({
@@ -2096,7 +2116,10 @@ export function buildOptionABlindIssuanceBundleEnvelope(input: {
   const sharedDefinition = input.definition ?? inputIssuances.find((issuance) => issuance.definition)?.definition ?? null;
   const definitionHash = input.definitionHash
     ?? inputIssuances.find((issuance) => issuance.definitionHash)?.definitionHash
-    ?? (sharedDefinition ? questionnaireDefinitionHash(sharedDefinition) : null);
+    ?? resolveQuestionnaireDefinitionHash(
+      inputIssuances[0]?.electionId ?? sharedDefinition?.questionnaireId,
+      sharedDefinition,
+    );
   const definitionEventId = input.definitionEventId
     ?? inputIssuances.find((issuance) => issuance.definitionEventId)?.definitionEventId
     ?? null;
@@ -2494,6 +2517,10 @@ export async function fetchOptionABlindRequestDms(input: {
           incrementReason(rejectReasons, "election_mismatch");
           continue;
         }
+        if (toNpub(decoded.sealPubkey) !== request.invitedNpub) {
+          incrementReason(rejectReasons, "sender_mismatch");
+          continue;
+        }
         const key = `${request.electionId}:${request.requestId}:${request.invitedNpub}`;
         if (!unique.has(key)) {
           unique.set(key, request);
@@ -2565,6 +2592,10 @@ export async function fetchOptionABlindRequestDmsWithNsec(input: {
       for (const request of requests) {
         if (input.electionId?.trim() && request.electionId !== input.electionId.trim()) {
           incrementReason(rejectReasons, "election_mismatch");
+          continue;
+        }
+        if (toNpub(decoded.sealPubkey) !== request.invitedNpub) {
+          incrementReason(rejectReasons, "sender_mismatch");
           continue;
         }
         const key = `${request.electionId}:${request.requestId}:${request.invitedNpub}`;

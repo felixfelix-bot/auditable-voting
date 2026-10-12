@@ -23,12 +23,17 @@ import {
   calculateRankQuestionScores,
   normaliseRankedOptionIds,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import type {
   QuestionnaireQuestion,
   QuestionnaireResponseAnswer,
   QuestionnaireResultPackReference,
   QuestionnaireResultQuestionSummary,
 } from "./questionnaireProtocol";
+import {
+  deriveHumanReadableResults,
+  type HumanReadableResults,
+} from "./humanReadableResults";
 
 const SUBMITTED_VOTES_PAGE_SIZE = 100;
 
@@ -131,6 +136,8 @@ type QuestionnaireResultsDashboardProps = {
   coordinatorText: string;
   publishedAtLabel: string;
   publishedAtTime?: number | null;
+  /** SHA-256 digest over the canonical result summary (the re-foldable proof). */
+  resultHash?: string | null;
   canExportResults?: boolean;
   onExportResults?: () => void;
   actions?: ReactNode;
@@ -199,6 +206,7 @@ export default function QuestionnaireResultsDashboard({
   coordinatorText,
   publishedAtLabel,
   publishedAtTime,
+  resultHash = null,
   canExportResults = false,
   onExportResults,
   actions,
@@ -332,6 +340,21 @@ export default function QuestionnaireResultsDashboard({
     questionnaire?.questions,
   ]);
 
+  const humanReadableResults = useMemo<HumanReadableResults>(() => deriveHumanReadableResults({
+    acceptedResponseCount: publishedTotalsAvailable ? displayValidCount : loadedAcceptedCount,
+    rejectedResponseCount: publishedTotalsAvailable ? displayInvalidCount : loadedRejectedCount,
+    questionSummaries: effectiveQuestionSummaries,
+    questions: questionnaire?.questions ?? [],
+  }), [
+    publishedTotalsAvailable,
+    displayValidCount,
+    displayInvalidCount,
+    loadedAcceptedCount,
+    loadedRejectedCount,
+    effectiveQuestionSummaries,
+    questionnaire?.questions,
+  ]);
+
   useEffect(() => {
     if (!hasInvalidResponses && showInvalidVotes) {
       setShowInvalidVotes(false);
@@ -421,7 +444,7 @@ export default function QuestionnaireResultsDashboard({
       {entry.response.answers?.map((answer) => {
         const question = selectedQuestionById.get(answer.questionId);
         const questionNumber = selectedQuestionNumberById.get(answer.questionId);
-        const prompt = `${questionNumber ? `Q${questionNumber}. ` : ""}${question?.prompt || answer.questionId}`;
+        const prompt = `${questionNumber ? `Q${questionNumber}. ` : ""}${resolveLocalised(question?.prompt ?? "", "en") || answer.questionId}`;
         const answerWasDecrypted = isAnswerDecrypted(entry, answer);
         if (answer.answerType === "yes_no") {
           return (
@@ -437,7 +460,7 @@ export default function QuestionnaireResultsDashboard({
         if (answer.answerType === "multiple_choice") {
           const selectedLabels = answer.selectedOptionIds.map((optionId) => (
             question?.type === "multiple_choice"
-              ? question.options.find((option) => option.optionId === optionId)?.label ?? optionId
+              ? resolveLocalised(question.options.find((option) => option.optionId === optionId)?.label ?? "", "en") || optionId
               : optionId
           ));
           return (
@@ -457,7 +480,7 @@ export default function QuestionnaireResultsDashboard({
         if (answer.answerType === "rank") {
           const rankedLabels = answer.rankedOptionIds.map((optionId) => (
             question?.type === "rank"
-              ? question.options.find((option) => option.optionId === optionId)?.label ?? optionId
+              ? resolveLocalised(question.options.find((option) => option.optionId === optionId)?.label ?? "", "en") || optionId
               : optionId
           ));
           return (
@@ -590,7 +613,7 @@ export default function QuestionnaireResultsDashboard({
       <div className='simple-auditor-question-grid simple-session-question-grid'>
         {filteredQuestionSummaries.map((summary) => {
           const questionNumber = selectedQuestionNumberById.get(summary.questionId);
-          const questionTitle = selectedQuestionById.get(summary.questionId)?.prompt || `Question ${summary.questionId}`;
+          const questionTitle = resolveLocalised(selectedQuestionById.get(summary.questionId)?.prompt ?? "", "en") || `Question ${summary.questionId}`;
           const questionResponseCount = acceptedQuestionResponseCountById.get(summary.questionId)
             ?? (publishedTotalsAvailable
               ? getSummaryResponseCount(summary, displayValidCount)
@@ -929,24 +952,6 @@ export default function QuestionnaireResultsDashboard({
                     </div>
                   </div>
                 </section>
-                {questionnaire.resultPack?.url ? (
-                  <section className='simple-auditor-status-card simple-auditor-status-card-wide'>
-                    <div className='simple-auditor-status-detail-row'>
-                      <span className='simple-auditor-status-icon' aria-hidden='true'><FileText /></span>
-                      <div>
-                        <p className='simple-auditor-summary-label'>Result pack</p>
-                        <div className='simple-auditor-result-pack-links'>
-                          <a href={questionnaire.resultPack.url} target='_blank' rel='noreferrer'>Download</a>
-                          {(questionnaire.resultPack.mirrors ?? []).slice(0, 3).map((mirror, index) => (
-                            <a key={mirror.url} href={mirror.url} target='_blank' rel='noreferrer'>
-                              Mirror {index + 1}
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-                ) : null}
               </AuditorDropdown>
             ) : null}
 
@@ -958,6 +963,7 @@ export default function QuestionnaireResultsDashboard({
                 title={<span className='simple-voter-section-title simple-auditor-results-subtitle' role='heading' aria-level={2}>Results</span>}
               >
                 {resultSummary}
+                <HumanReadableResultsSummary results={humanReadableResults} />
                 {effectiveQuestionSummaries.length > 0 ? (
                   <UiTextField
                     label='Filter results'
@@ -973,6 +979,20 @@ export default function QuestionnaireResultsDashboard({
                 {questionSummaryContent}
               </AuditorDropdown>
             ) : questionSummaryContent}
+
+            {!isSessionVariant ? (
+              <AuditorDropdown
+                className='simple-auditor-verification-dropdown'
+                headClassName='simple-auditor-verification-dropdown-head'
+                title={<span className='simple-voter-section-title simple-auditor-results-subtitle' role='heading' aria-level={2}>Verification pack (auditors)</span>}
+              >
+                <ResultVerificationPack
+                  resultHash={resultHash}
+                  resultPack={questionnaire.resultPack}
+                  onExportResults={canExportResults && onExportResults ? onExportResults : undefined}
+                />
+              </AuditorDropdown>
+            ) : null}
           </>
         ) : emptySelectionText ? (
           <p className='simple-voter-empty simple-auditor-empty-panel'>{emptySelectionText}</p>
@@ -1018,7 +1038,7 @@ export default function QuestionnaireResultsDashboard({
           </UiButton>
           <div className='token-fingerprint-overlay-card simple-auditor-full-results-card' onClick={(event) => event.stopPropagation()}>
             <h3 className='simple-voter-question'>
-              {selectedQuestionById.get(freeTextViewerQuestionId)?.prompt || freeTextViewerQuestionId}
+              {resolveLocalised(selectedQuestionById.get(freeTextViewerQuestionId)?.prompt ?? "", "en") || freeTextViewerQuestionId}
             </h3>
             <ul className='simple-voter-list'>
               {responseDetails
@@ -1052,6 +1072,115 @@ export default function QuestionnaireResultsDashboard({
         </section>
       ) : null}
     </>
+  );
+}
+
+function formatPercent(value: number) {
+  return value % 1 === 0 ? String(value) : value.toFixed(1);
+}
+
+/**
+ * The default, human-readable presentation of a result: plain counts plus a
+ * per-question demographic breakdown (community/country and other tallies).
+ * Renders the same numbers the verification pack commits to, without the
+ * cryptographic detail.
+ */
+function HumanReadableResultsSummary({ results }: { results: HumanReadableResults }) {
+  return (
+    <section className='simple-human-results' aria-label='Results at a glance'>
+      <p className='simple-human-results-counts'>
+        <strong>{results.acceptedResponseCount}</strong> accepted
+        {results.rejectedResponseCount > 0 ? (
+          <span> · <strong>{results.rejectedResponseCount}</strong> rejected</span>
+        ) : null}
+        <span> of <strong>{results.totalResponseCount}</strong> responses</span>
+      </p>
+      {results.breakdowns.length > 0 ? (
+        <dl className='simple-human-results-breakdown'>
+          {results.breakdowns.map((breakdown) => (
+            <div key={breakdown.questionId} className='simple-human-results-question'>
+              <dt className='simple-human-results-question-prompt'>
+                {breakdown.questionNumber !== null ? `Q${breakdown.questionNumber}. ` : ""}{breakdown.prompt}
+              </dt>
+              <dd className='simple-human-results-question-entries'>
+                {breakdown.entries.length > 0 ? (
+                  breakdown.entries.map((entry) => (
+                    <span key={entry.label} className='simple-human-results-entry'>
+                      <span className='simple-human-results-entry-label'>{entry.label}</span>
+                      {" "}
+                      <strong>{entry.count}</strong>
+                      <span className='simple-human-results-entry-percent'> ({formatPercent(entry.percent)}%)</span>
+                    </span>
+                  ))
+                ) : (
+                  <span className='simple-human-results-entry-single'>{breakdown.responseCount} written responses</span>
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The verifiable cryptographic pack, kept behind a link for auditors: the
+ * re-foldable proof (`resultHash`) plus the raw CSV result pack. The
+ * `resultHash` is a SHA-256 digest over the canonical result summary, so an
+ * auditor can re-derive it from the published counts and question tallies.
+ */
+function ResultVerificationPack({
+  resultHash,
+  resultPack,
+  onExportResults,
+}: {
+  resultHash: string | null | undefined;
+  resultPack: QuestionnaireResultPackReference | null | undefined;
+  onExportResults?: () => void;
+}) {
+  return (
+    <div className='simple-verification-pack'>
+      <p className='simple-voter-note'>
+        The result hash is a SHA-256 digest of the canonical result summary (the counts and per-question
+        tallies above). An auditor can re-fold the published responses and re-derive it to check nothing changed.
+      </p>
+      {resultHash ? (
+        <div className='simple-verification-pack-hash'>
+          <p className='simple-auditor-summary-label'>Result hash</p>
+          <div className='simple-auditor-copy-value'>
+            <span className='simple-auditor-copy-value-text'>{resultHash}</span>
+            <button
+              type='button'
+              className='simple-auditor-copy-value-button'
+              aria-label='Copy result hash'
+              onClick={() => {
+                if (typeof navigator !== "undefined" && navigator.clipboard) {
+                  void navigator.clipboard.writeText(resultHash);
+                }
+              }}
+            >
+              <Copy aria-hidden='true' />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className='simple-voter-note'>No result hash was published with this summary.</p>
+      )}
+      {resultPack?.url ? (
+        <div className='simple-auditor-result-pack-links'>
+          <a href={resultPack.url} target='_blank' rel='noreferrer'>Download result pack (CSV)</a>
+          {(resultPack.mirrors ?? []).slice(0, 3).map((mirror, index) => (
+            <a key={mirror.url} href={mirror.url} target='_blank' rel='noreferrer'>Mirror {index + 1}</a>
+          ))}
+        </div>
+      ) : null}
+      {onExportResults ? (
+        <UiButton icon='export' className='simple-auditor-export-button' onPress={onExportResults}>
+          Export results
+        </UiButton>
+      ) : null}
+    </div>
   );
 }
 
@@ -1179,7 +1308,7 @@ function MultipleChoiceSummaryCard({
       {rows
         .map((row) => {
           const label = question?.type === "multiple_choice"
-            ? question.options.find((option) => option.optionId === row.optionId)?.label ?? row.optionId
+            ? resolveLocalised(question.options.find((option) => option.optionId === row.optionId)?.label ?? "", "en") || row.optionId
             : row.optionId;
           const percentOfResponses = totalResponses > 0 ? (row.layers.totalValue / totalResponses) * 100 : 0;
           return { label, percentOfResponses, row };
@@ -1244,7 +1373,7 @@ function RankSummaryCard({
       {rows
         .map((row, index) => {
           const label = question?.type === "rank"
-            ? question.options.find((option) => option.optionId === row.optionId)?.label ?? row.optionId
+            ? resolveLocalised(question.options.find((option) => option.optionId === row.optionId)?.label ?? "", "en") || row.optionId
             : row.optionId;
           return (
             <div key={row.optionId} className='simple-auditor-option-bar-row'>
@@ -1643,6 +1772,7 @@ function formatInvalidReason(reason: string | null | undefined) {
     duplicate_nullifier: "Duplicate token spend",
     duplicate_response: "Duplicate response",
     invalid_token_proof: "Invalid token proof",
+    unknown_token_proof: "Unverifiable token proof (signing key missing)",
     invalid_payload_shape: "Invalid response payload",
     questionnaire_closed: "Questionnaire closed",
   };
