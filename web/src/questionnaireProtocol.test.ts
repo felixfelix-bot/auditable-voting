@@ -376,4 +376,179 @@ describe("questionnaireProtocol", () => {
     expect(result.errors).toContain("invalid_option_id:q2:invalid-option");
     expect(result.errors).toContain("missing_required_answer:q1");
   });
+
+  // --- F2-T1: Conditional logic (showIf) tests ---
+
+  it("accepts a valid showIf referencing an earlier yes_no question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "What did you think?",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("accepts a valid showIf referencing an earlier multiple_choice question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Describe your tech experience",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: ["tech"] },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects showIf referencing a non-existent question", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Did you attend?", required: true },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "nonexistent",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_dependency_not_found:q2:nonexistent");
+  });
+
+  it("rejects showIf with a forward reference (later question)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q2",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+        { questionId: "q2", type: "yes_no", prompt: "Did you attend?", required: true },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_forward_reference:q1:q2");
+  });
+
+  it("rejects showIf answer type mismatch (yes_no condition on multiple_choice question)", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "yes_no", value: true },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_answer_type_mismatch:q2:q1");
+  });
+
+  it("rejects showIf multiple_choice with invalid option id", () => {
+    const definition: QuestionnaireDefinition = {
+      ...buildDefinition(),
+      questions: [
+        {
+          questionId: "q1",
+          type: "multiple_choice",
+          prompt: "Which area?",
+          required: true,
+          multiSelect: false,
+          options: [
+            { optionId: "tech", label: "Technology" },
+            { optionId: "arts", label: "Arts" },
+          ],
+        },
+        {
+          questionId: "q2",
+          type: "free_text",
+          prompt: "Details",
+          required: false,
+          maxLength: 500,
+          showIf: {
+            dependsOnQuestionId: "q1",
+            requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: ["nonexistent"] },
+          },
+        },
+      ],
+    };
+    const result = validateQuestionnaireDefinition(definition);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("show_if_invalid_option_id:q2:q1:nonexistent");
+  });
+
+  it("accepts questions without showIf (backward compatibility)", () => {
+    const result = validateQuestionnaireDefinition(buildDefinition());
+    expect(result.valid).toBe(true);
+  });
 });
