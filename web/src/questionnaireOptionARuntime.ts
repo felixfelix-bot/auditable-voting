@@ -23,6 +23,7 @@ import {
   type ElectionSummary,
   type ElectionState,
   type Npub,
+  type PendingPublicRelease,
   type QuestionnaireBlindPublicKey,
   type QuestionnaireAnswer,
   type VoterElectionLocalState,
@@ -44,6 +45,7 @@ import {
   readBallotSubmissionAckRecord,
   readBlindRequestAckRecord,
   readElectionPrivateRelayPrefs,
+  readVoterPublicationPolicy,
   readAcceptance,
   readBallotAcceptanceDeliveryRecord,
   readBallotSubmissionAckDeliveryRecord,
@@ -120,12 +122,17 @@ import {
   type OptionAVoterStateSnapshot,
   type OptionABlindRequestFetchDiagnostics,
 } from "./questionnaireOptionABlindDm";
-import { readCachedQuestionnaireDefinition, storeCachedQuestionnaireDefinition } from "./questionnaireDefinitionCache";
+import { readCachedQuestionnaireDefinition, storeCachedQuestionnaireDefinition,
+  storeCachedQuestionnaireDefinitionReference,
+} from "./questionnaireDefinitionCache";
 import {
   buildQuestionnaireDefinitionReference,
   questionnaireDefinitionEventHash,
-  questionnaireDefinitionHash,
+  questionnaireDefinitionHashMatches,
+  resolveQuestionnaireDefinitionHash,
 } from "./questionnaireDefinitionReference";
+import { optionAAnswersForVisibility } from "./questionnaireOptionA";
+import { visibleQuestionIds } from "./questionConditionEvaluator";
 import { fetchOptionAInviteDms, publishOptionAInviteDm } from "./questionnaireOptionAInviteDm";
 import type { SignerService } from "./services/signerService";
 import {
@@ -158,19 +165,27 @@ import {
   normaliseQuestionnaireAllowedScopes,
   normaliseQuestionnaireBallotGroup,
   normaliseQuestionnaireCredentialsPerVoter,
+  normaliseQuestionnairePrivateInviteMaxRedemptions,
   questionBallotCredentialScope,
   questionnaireCredentialsPerVoter,
+  questionnairePublicationPolicyFromDefinition,
+  questionnairePublicationPolicyGraceUntil,
+  questionnairePublicationPolicyReleaseAt,
+  normaliseQuestionnairePublicationPolicy,
+  questionnaireSubmissionTimestamp,
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireCredentialsPerVoter,
   type QuestionnaireDefinition,
+  type QuestionnairePublicationPolicy,
   type QuestionnaireResponseAnswer,
   type QuestionnaireSubmissionDecision,
 } from "./questionnaireProtocol";
+import { resolveLocalised } from "./i18n/resolveLocale";
 import { mineGeneralInvitePow, verifyGeneralInvitePow } from "./questionnaireGeneralInvitePow";
 import type { QuestionnaireSubmissionDecisionReason } from "./questionnaireProtocol";
 import { mergeQuestionnaireRelayHints } from "./questionnaireRelays";
 import { DEFAULT_NOSTR_DM_RELAYS as SIMPLE_DM_RELAYS } from "./nostrRelayConfig";
-import { QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1, type QuestionnaireFlowMode } from "./questionnaireProtocolConstants";
+import { QUESTIONNAIRE_FLOW_MODE_PUBLIC_SUBMISSION_V1, QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE, type QuestionnaireFlowMode } from "./questionnaireProtocolConstants";
 import {
   buildIssueBlindTokensWorkerRouting,
   mergeBlindRequestRoutingRelays,
@@ -213,6 +228,8 @@ export type OptionARuntimeErrorCode =
   | "definition_not_ready"
   | "issuance_failed"
   | "dm_delivery_failed"
+  | "invalid_publication_mode"
+  | "release_window_expired"
   | "invalid_submission";
 
 export class OptionARuntimeError extends Error {
@@ -267,11 +284,28 @@ function getPreferredQuestionnaireDmRelays(electionId: string) {
   );
 }
 
-function cacheQuestionnaireDefinitionForRuntime(definition: QuestionnaireDefinition) {
+function cacheQuestionnaireDefinitionForRuntime(
+  definition: QuestionnaireDefinition,
+  wire?: { definitionHash?: string | null; definitionEventId?: string | null } | null,
+) {
   const storedDefinition = storeCachedQuestionnaireDefinition(definition) ?? definition;
   const electionId = storedDefinition.questionnaireId.trim();
   if (!electionId) {
     return;
+  }
+  // B1: record the hash of the wire document alongside the parsed definition.
+  // `storeCachedQuestionnaireDefinition` canonicalises text fields, so for a
+  // definition published with bare-string text the cached object is NOT the
+  // document the Rust worker hashed. Carrying the wire hash here keeps every
+  // object-derived consumer (resolveQuestionnaireDefinitionHash) in agreement
+  // with the worker instead of silently diverging.
+  const wireDefinitionHash = wire?.definitionHash?.trim() ?? "";
+  if (wireDefinitionHash) {
+    storeCachedQuestionnaireDefinitionReference(buildQuestionnaireDefinitionReference({
+      definition: storedDefinition,
+      definitionEventId: wire?.definitionEventId ?? null,
+      definitionHash: wireDefinitionHash,
+    }));
   }
   const summary = loadElectionSummary(electionId);
   const coordinatorNpub = storedDefinition.coordinatorPubkey.trim();
@@ -281,8 +315,8 @@ function cacheQuestionnaireDefinitionForRuntime(definition: QuestionnaireDefinit
   const closed = Number.isFinite(storedDefinition.closeAt) && storedDefinition.closeAt <= Math.floor(Date.now() / 1000);
   upsertElectionSummary({
     electionId,
-    title: storedDefinition.title || summary?.title || "Questionnaire",
-    description: storedDefinition.description ?? summary?.description ?? "",
+    title: resolveLocalised(storedDefinition.title, "en") || summary?.title || "Questionnaire",
+    description: resolveLocalised(storedDefinition.description ?? "", "en") || summary?.description || "",
     state: summary?.state ?? (closed ? "closed" : "open"),
     openedAt: Number.isFinite(storedDefinition.openAt) ? new Date(storedDefinition.openAt * 1000).toISOString() : summary?.openedAt ?? null,
     closedAt: Number.isFinite(storedDefinition.closeAt) ? new Date(storedDefinition.closeAt * 1000).toISOString() : summary?.closedAt ?? null,
@@ -488,6 +522,31 @@ function hasCompatibleBlindTokenSecretKey(
   return Boolean(secret) && (!expectedKeyId || secret?.blindSigningPublicKey.keyId === expectedKeyId);
 }
 
+/**
+ * Strips the responder nsec from pending windowed releases before they are
+ * written into a self-state snapshot (A1). The snapshot must never persist the
+ * responder secret; recovery re-derives it from the issued token secrets.
+ */
+function stripPendingPublicReleaseSecrets(
+  pending: Record<string, PendingPublicRelease> | undefined,
+): Record<string, Omit<PendingPublicRelease, "responseNsec">> | undefined {
+  if (!pending) {
+    return undefined;
+  }
+  const stripped: Record<string, Omit<PendingPublicRelease, "responseNsec">> = {};
+  for (const [submissionId, entry] of Object.entries(pending)) {
+    stripped[submissionId] = {
+      submissionId: entry.submissionId,
+      submissionKey: entry.submissionKey ?? null,
+      releaseAt: entry.releaseAt,
+      graceUntil: entry.graceUntil,
+      releasedAt: entry.releasedAt ?? null,
+      releasedEventId: entry.releasedEventId ?? null,
+    };
+  }
+  return stripped;
+}
+
 type ResponseSecretMaterial = {
   tokenSecret: string;
   tokenCommitment: string;
@@ -578,8 +637,8 @@ function buildLocalPublishedElectionSummary(
     return null;
   }
   return {
-    title: summary?.title ?? definition?.title ?? existing?.title,
-    description: summary?.description ?? definition?.description ?? existing?.description,
+    title: summary?.title ?? (resolveLocalised(definition?.title ?? "", "en") || existing?.title),
+    description: summary?.description ?? (resolveLocalised(definition?.description ?? "", "en") || existing?.description),
     state: summary?.state ?? (definition ? "open" : existing?.state),
     openedAt: summary?.openedAt ?? (definition?.openAt ? new Date(definition.openAt * 1000).toISOString() : existing?.openedAt),
     closedAt: summary?.closedAt ?? (definition?.closeAt ? new Date(definition.closeAt * 1000).toISOString() : existing?.closedAt),
@@ -832,6 +891,21 @@ function submissionCredentialBundle(submission: BallotSubmission): BallotCredent
   }];
 }
 
+function findStoredSubmission(
+  state: VoterElectionLocalState,
+  submissionId: string,
+): BallotSubmission | null {
+  if (state.submission?.submissionId === submissionId) {
+    return state.submission;
+  }
+  for (const submission of Object.values(state.submissions ?? {})) {
+    if (submission?.submissionId === submissionId) {
+      return submission;
+    }
+  }
+  return null;
+}
+
 function ballotCredentialProofQuestionId(proof: BallotCredentialProof) {
   return proof.questionId?.trim() || proof.ballotScope?.questionId?.trim() || "";
 }
@@ -933,11 +1007,34 @@ function publicDecisionToAcceptance(decision: QuestionnaireSubmissionDecision): 
   };
 }
 
+/**
+ * Question ids that may appear in a published payload (B3).
+ *
+ * Returns `null` when there is nothing to filter — no cached definition, or a definition with no
+ * `showIf` rules — so callers keep the previous behaviour exactly for unconditional questionnaires.
+ */
+function visibleQuestionIdsForDefinition(
+  definition: QuestionnaireDefinition | null,
+  responses: QuestionnaireAnswer[],
+): Set<string> | null {
+  if (!definition || !definition.questions.some((question) => question.showIf)) {
+    return null;
+  }
+  return visibleQuestionIds(definition, optionAAnswersForVisibility(responses));
+}
+
 function toQuestionnaireResponseAnswers(
   responses: QuestionnaireAnswer[],
-  options?: { coordinatorNpub?: string; responseSecretKey?: Uint8Array | null },
+  options?: {
+    coordinatorNpub?: string;
+    responseSecretKey?: Uint8Array | null;
+    visibleQuestionIds?: ReadonlySet<string> | null;
+  },
 ): QuestionnaireResponseAnswer[] {
-  return responses.map((answer) => {
+  const publishedQuestionIdSet = options?.visibleQuestionIds ?? null;
+  return responses
+    .filter((answer) => !publishedQuestionIdSet || publishedQuestionIdSet.has(answer.questionId))
+    .map((answer) => {
     if (answer.type === "yes_no") {
       return {
         questionId: answer.questionId,
@@ -976,10 +1073,16 @@ function toQuestionnaireResponseAnswers(
       answerType: "free_text",
       text,
     };
-  });
+    });
 }
 
-function fromQuestionnaireResponseAnswers(answers: QuestionnaireResponseAnswer[]): QuestionnaireAnswer[] {
+/**
+ * Convert protocol answers (as the questionnaire panels render them) into the
+ * Option A ballot payload shape.  Shared with the paper-ballot manual entry
+ * screen so a manually entered ballot carries exactly the payload the digital
+ * voter flow would have produced.
+ */
+export function fromQuestionnaireResponseAnswers(answers: QuestionnaireResponseAnswer[]): QuestionnaireAnswer[] {
   return answers.map((answer) => {
     if (answer.answerType === "yes_no") {
       return {
@@ -1227,15 +1330,31 @@ export class QuestionnaireOptionAVoterRuntime {
         limit: 20,
         relays: relays.length > 0 ? relays : undefined,
       });
-      const latest = [...entries]
+      const latestEntry = [...entries]
         .filter((entry) => entry.definition.questionnaireId === input.state.electionId)
         .filter((entry) => {
           const expectedHash = input.state.inviteMessage?.definitionReference?.definitionHash?.trim() ?? "";
           return !expectedHash || questionnaireDefinitionEventHash(entry.event.content) === expectedHash;
         })
-        .sort((left, right) => Number(right.event.created_at ?? right.definition.createdAt ?? 0) - Number(left.event.created_at ?? left.definition.createdAt ?? 0))[0]?.definition ?? null;
-      if (latest) {
-        cacheQuestionnaireDefinitionForRuntime(latest);
+        .sort((left, right) => Number(right.event.created_at ?? right.definition.createdAt ?? 0) - Number(left.event.created_at ?? left.definition.createdAt ?? 0))[0] ?? null;
+      if (latestEntry) {
+        // A definition fetched from relays carries the event content, so the wire hash is the
+        // document the Rust worker hashed. Aggregated/offline listings can omit it; hashing an
+        // absent payload throws, and because this whole block is inside the best-effort
+        // `catch` below, throwing here silently discarded a perfectly good fresh definition and
+        // left the stale cached blind key in place. Only pin the wire hash when we have it.
+        const definitionWireContent = typeof latestEntry.event.content === "string"
+          ? latestEntry.event.content
+          : "";
+        cacheQuestionnaireDefinitionForRuntime(
+          latestEntry.definition,
+          definitionWireContent
+            ? {
+              definitionHash: questionnaireDefinitionEventHash(definitionWireContent),
+              definitionEventId: latestEntry.event.id,
+            }
+            : null,
+        );
       }
     } catch {
       // A fresh public definition is preferred, but cached metadata is still usable offline.
@@ -1439,6 +1558,7 @@ export class QuestionnaireOptionAVoterRuntime {
       submissionAccepted: state.submissionAccepted ?? null,
       submissionAcceptedAt: state.submissionAcceptedAt ?? null,
       submissionDecisions: state.submissionDecisions ?? {},
+      pendingPublicReleases: stripPendingPublicReleaseSecrets(state.pendingPublicReleases),
       lastUpdatedAt: state.lastUpdatedAt,
     };
   }
@@ -1541,7 +1661,7 @@ export class QuestionnaireOptionAVoterRuntime {
     }
   }
 
-  private applyRecoveredVoterStateSnapshot(snapshot: OptionAVoterStateSnapshot) {
+  private async applyRecoveredVoterStateSnapshot(snapshot: OptionAVoterStateSnapshot) {
     if (!this.state) {
       return false;
     }
@@ -1603,6 +1723,16 @@ export class QuestionnaireOptionAVoterRuntime {
         ...(this.state.submissionDecisions ?? {}),
       },
       lastUpdatedAt: snapshotLooksNewer ? snapshot.lastUpdatedAt : this.state.lastUpdatedAt,
+    };
+    // A1: rebuild queued windowed releases from the snapshot, re-deriving the
+    // responder nsec locally instead of persisting it. Locally-known records win.
+    const inheritedReleases = await this.rebuildRecoveredPendingPublicReleases(next, snapshot);
+    next = {
+      ...next,
+      pendingPublicReleases: {
+        ...inheritedReleases,
+        ...(this.state.pendingPublicReleases ?? {}),
+      },
     };
     next = reconcileVoterCredentialReadyForDefinition(next, readCachedQuestionnaireDefinition(next.electionId));
     if (next.blindIssuance && voterHasTokenSecretForIssuance(next, next.blindIssuance)) {
@@ -1667,7 +1797,7 @@ export class QuestionnaireOptionAVoterRuntime {
       .filter((snapshot) => snapshot.electionId === this.state?.electionId && snapshot.invitedNpub === this.state?.invitedNpub)
       .sort((left, right) => Date.parse(right.lastUpdatedAt) - Date.parse(left.lastUpdatedAt))[0] ?? null;
     if (latest) {
-      this.applyRecoveredVoterStateSnapshot(latest);
+      await this.applyRecoveredVoterStateSnapshot(latest);
     }
     return this.state;
   }
@@ -1751,7 +1881,6 @@ export class QuestionnaireOptionAVoterRuntime {
       return false;
     }
     const definition = readCachedQuestionnaireDefinition(plan.electionId);
-    const definitionHash = definition ? questionnaireDefinitionHash(definition) : null;
     const definitionEventId = (definition as (QuestionnaireDefinition & { eventId?: string }) | null)?.eventId ?? null;
     const initial = this.state.blindRequest;
     const planScopeKeys = new Set(plan.ballotScopes.map(ballotScopeKey));
@@ -1759,7 +1888,7 @@ export class QuestionnaireOptionAVoterRuntime {
       !initial
       || plan.initialRequestId !== initial.requestId
       || plan.blindSigningKeyId !== initial.blindSigningKeyId
-      || (plan.definitionHash && definitionHash && plan.definitionHash !== definitionHash)
+      || (plan.definitionHash && definition && !questionnaireDefinitionHashMatches(plan.definitionHash, plan.electionId, definition))
       || (plan.definitionEventId && definitionEventId && plan.definitionEventId !== definitionEventId)
       || !planScopeKeys.has(ballotScopeKey(initial.ballotScope))
       || plan.ballotScopes.some((scope) => ballotScopeCredentialIndex(scope) > 2)
@@ -2220,6 +2349,65 @@ export class QuestionnaireOptionAVoterRuntime {
     return readyState;
   }
 
+  /**
+   * Re-derives the responder nsec from the issued token secrets carried in the
+   * snapshot (A1). The derivation domain is shared with the submit path
+   * (auditable-voting/questionnaire-response-identity/v2) so a rebuilt release
+   * signs with exactly the identity the ballot was submitted under.
+   */
+  private async deriveRecoveredResponderNsec(state: VoterElectionLocalState): Promise<string | null> {
+    const secrets: ResponseSecretMaterial[] = Object.values(state.blindTokenSecrets ?? {}).map((secret) => ({
+      tokenSecret: secret.tokenSecret,
+      tokenCommitment: secret.tokenCommitment,
+      ballotScope: secret.ballotScope ?? state.blindIssuance?.ballotScope ?? null,
+    }));
+    if (secrets.length === 0) {
+      const single = state.blindTokenSecret ?? null;
+      if (!single) {
+        return null;
+      }
+      secrets.push({
+        tokenSecret: single.tokenSecret,
+        tokenCommitment: single.tokenCommitment,
+        ballotScope: single.ballotScope ?? state.blindIssuance?.ballotScope ?? null,
+      });
+    }
+    const key = await deriveDeterministicResponseSecretKey({
+      electionId: state.electionId,
+      secrets,
+    });
+    return nip19.nsecEncode(key);
+  }
+
+  private async rebuildRecoveredPendingPublicReleases(
+    state: VoterElectionLocalState,
+    snapshot: OptionAVoterStateSnapshot,
+  ): Promise<Record<string, PendingPublicRelease>> {
+    const wire = snapshot.pendingPublicReleases ?? {};
+    const submissionIds = Object.keys(wire);
+    if (submissionIds.length === 0) {
+      return {};
+    }
+    const responseNsec = await this.deriveRecoveredResponderNsec(state);
+    if (!responseNsec) {
+      return {};
+    }
+    const rebuilt: Record<string, PendingPublicRelease> = {};
+    for (const submissionId of submissionIds) {
+      const entry = wire[submissionId]!;
+      rebuilt[submissionId] = {
+        submissionId: entry.submissionId ?? submissionId,
+        submissionKey: entry.submissionKey ?? null,
+        responseNsec,
+        releaseAt: entry.releaseAt,
+        graceUntil: entry.graceUntil,
+        releasedAt: entry.releasedAt ?? null,
+        releasedEventId: entry.releasedEventId ?? null,
+      };
+    }
+    return rebuilt;
+  }
+
   private applyRecoveredSubmission(submission: BallotSubmission) {
     if (!this.state || submission.electionId !== this.state.electionId) {
       return false;
@@ -2310,6 +2498,21 @@ export class QuestionnaireOptionAVoterRuntime {
     }
     const credentialIndex = Math.max(1, Math.floor(options?.credentialIndex ?? 1));
     const definition = readCachedQuestionnaireDefinition(this.state.electionId);
+    // B3: the public provisional payload must not reveal answers to questions the voter cannot
+    // see. Both channels are filtered together - the `questionIds` array/tags and `answers` -
+    // because publishing only one of them still leaks the conditioning signal.
+    const publishedQuestionIdSet = visibleQuestionIdsForDefinition(definition, this.state.draftResponses);
+    const publishQuestionIds = publishedQuestionIdSet
+      ? targetQuestionIds.filter((questionId) => publishedQuestionIdSet.has(questionId))
+      : targetQuestionIds;
+    if (publishQuestionIds.length === 0) {
+      return null;
+    }
+    // Windowed rounds suppress live per-question hints: they are signed by the
+    // same key as the final ballot and would reintroduce timing correlation.
+    if (questionnairePublicationPolicyReleaseAt(this.resolvePublicationPolicy()) !== null) {
+      return null;
+    }
     let responseSecretKey: Uint8Array;
     try {
       responseSecretKey = await deriveDeterministicResponseSecretKey({
@@ -2325,7 +2528,7 @@ export class QuestionnaireOptionAVoterRuntime {
     const responseNsec = nip19.nsecEncode(responseSecretKey);
     const responseIdHash = await sha256Hex(stableStringify({
       electionId: this.state.electionId,
-      questionIds: targetQuestionIds,
+      questionIds: publishQuestionIds,
       credentialIndex,
       authorPubkey: nip19.npubEncode(getPublicKey(responseSecretKey)),
     }));
@@ -2335,17 +2538,18 @@ export class QuestionnaireOptionAVoterRuntime {
       questionnaireDefinitionEventId: null,
       responseId: `provisional_${responseIdHash.slice(0, 20)}`,
       submittedAt: Math.floor(Date.now() / 1000),
-      questionIds: targetQuestionIds,
+      questionIds: publishQuestionIds,
       credentialIndex,
       answers: toQuestionnaireResponseAnswers(responses, {
         coordinatorNpub: this.state.coordinatorNpub,
         responseSecretKey,
+        visibleQuestionIds: publishedQuestionIdSet,
       }),
       relays: this.getPreferredDmRelays(),
     });
     optionAFlowLog("voter", "provisional_response_public_publish_result", {
       electionId: this.state.electionId,
-      questionIds: targetQuestionIds,
+      questionIds: publishQuestionIds,
       credentialIndex,
       successes: published?.successes ?? 0,
       failures: published?.failures ?? 0,
@@ -3392,6 +3596,56 @@ export class QuestionnaireOptionAVoterRuntime {
     return this.state;
   }
 
+  private async publishStoredSubmissionPublic(
+    submission: BallotSubmission,
+    responseNsec: string,
+    options?: { eventCreatedAt?: number; submittedAt?: number },
+  ) {
+    if (!this.state) {
+      throw new OptionARuntimeError("not_logged_in", "Login is required.");
+    }
+    const credentialBundle = submissionCredentialBundle(submission);
+    const includeCredentialBundle = Array.isArray(submission.credentialBundle)
+      && submission.credentialBundle.length > 0;
+    const submittedAt = options?.submittedAt
+      ?? (Number.isFinite(Date.parse(submission.submittedAt))
+        ? Math.floor(Date.parse(submission.submittedAt) / 1000)
+        : Math.floor(Date.now() / 1000));
+    return publishQuestionnaireBlindResponsePublic({
+      responseNsec,
+      questionnaireId: this.state.electionId,
+      responseId: submission.submissionId,
+      submittedAt,
+      eventCreatedAt: options?.eventCreatedAt,
+      tokenNullifier: submission.nullifier,
+      tokenNullifiers: includeCredentialBundle ? credentialBundle.map((proof) => ({
+        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
+        tokenNullifier: proof.nullifier,
+        ballotScope: proof.ballotScope ?? null,
+      })) : undefined,
+      tokenProof: {
+        tokenCommitment: submission.tokenCommitment,
+        questionnaireId: this.state.electionId,
+        signature: submission.credential,
+        blindSigningKeyId: submission.blindSigningKeyId,
+        ballotScope: credentialBundle[0]?.ballotScope ?? null,
+      },
+      tokenProofs: includeCredentialBundle ? credentialBundle.map((proof) => ({
+        tokenCommitment: proof.tokenCommitment,
+        questionnaireId: submission.electionId,
+        signature: proof.credential,
+        blindSigningKeyId: proof.blindSigningKeyId,
+        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
+        ballotScope: proof.ballotScope ?? null,
+      })) : undefined,
+      answers: toQuestionnaireResponseAnswers(submission.payload.responses, {
+        coordinatorNpub: this.state.coordinatorNpub,
+        responseSecretKey: decodeNsecSecretKey(responseNsec),
+      }),
+      relays: this.getPreferredDmRelays(),
+    });
+  }
+
   async submitVote(requiredQuestionIds: string[], options?: SubmitVoteOptions) {
     if (this.submitVoteInflight) {
       optionAFlowLog("voter", "submit_vote_inflight_reused", { electionId: this.electionId });
@@ -3587,6 +3841,50 @@ export class QuestionnaireOptionAVoterRuntime {
     return secrets;
   }
 
+  /**
+   * A6: read the release policy that governs this round.
+   *
+   * Voter-local state is consulted first because the shared definition cache can
+   * be evicted at any moment; the cache is only a fallback. Returning null means
+   * the mode is genuinely unknown and callers must fail closed instead of
+   * publishing immediately with the real submission time.
+   */
+  private resolvePublicationPolicy(): QuestionnairePublicationPolicy | null {
+    const electionId = this.state?.electionId ?? this.electionId;
+    // The freshly fetched definition is authoritative: a coordinator may have
+    // switched the round to windowed after the last local save.
+    const cachedPolicy = questionnairePublicationPolicyFromDefinition(readCachedQuestionnaireDefinition(electionId));
+    if (cachedPolicy) {
+      return cachedPolicy;
+    }
+    const inMemoryPolicy = normaliseQuestionnairePublicationPolicy(this.state?.publicationPolicy);
+    if (inMemoryPolicy) {
+      return inMemoryPolicy;
+    }
+    const invitedNpub = this.state?.invitedNpub;
+    const persistedPolicy = invitedNpub
+      ? readVoterPublicationPolicy({ voterNpub: invitedNpub, electionId })
+      : null;
+    if (persistedPolicy) {
+      return persistedPolicy;
+    }
+    // A questionnaire that has not been published yet (coordinator draft round)
+    // has no determinate mode. Treat it as the historical "immediate" default so
+    // the legacy pre-publication submit path keeps working; only a published/open
+    // round with an unknown mode is a fail-closed condition (A6).
+    if (loadElectionSummary(electionId)?.state === "draft") {
+      const draftDefinition = readCachedQuestionnaireDefinition(electionId);
+      return {
+        publicationMode: QUESTIONNAIRE_PUBLICATION_MODE_IMMEDIATE,
+        finalizationGraceSeconds: null,
+        closeAt: Number.isFinite(draftDefinition?.closeAt)
+          ? Math.floor(draftDefinition!.closeAt as number)
+          : Math.floor(Date.now() / 1000) + 3600,
+      };
+    }
+    return null;
+  }
+
   private async submitVoteInternal(requiredQuestionIds: string[], options?: SubmitVoteOptions) {
     if (!this.state) {
       throw new OptionARuntimeError("not_logged_in", "Login is required.");
@@ -3603,9 +3901,13 @@ export class QuestionnaireOptionAVoterRuntime {
       .map((questionId) => questionId.trim())
       .filter(Boolean))];
     const targetQuestionIdSet = new Set(targetQuestionIds);
-    const submissionResponses = targetQuestionIdSet.size > 0
-      ? this.state.draftResponses.filter((answer) => targetQuestionIdSet.has(answer.questionId))
-      : this.state.draftResponses;
+    // B3: a hidden question's retained answer must not reach the submission payload either.
+    const publishedQuestionIdSet = visibleQuestionIdsForDefinition(definition, this.state.draftResponses);
+    const submissionResponses = (
+      targetQuestionIdSet.size > 0
+        ? this.state.draftResponses.filter((answer) => targetQuestionIdSet.has(answer.questionId))
+        : this.state.draftResponses
+    ).filter((answer) => !publishedQuestionIdSet || publishedQuestionIdSet.has(answer.questionId));
     const credentialIndex = options?.credentialIndex ?? 1;
     const activeBallotGroup = voterBallotGroup({
       invite: this.state.inviteMessage ?? null,
@@ -3665,6 +3967,65 @@ export class QuestionnaireOptionAVoterRuntime {
         return this.state;
       }
       this.submissionRepublishAttemptAtBySubmissionId.set(submissionId, nowMs);
+      // Decide whether this submission is windowed from the publication POLICY,
+      // not from whether a pendingPublicReleases entry happens to exist. A
+      // windowed submission published on the in-window immediate path creates
+      // no pending entry, so gating on entry presence let its republish fall
+      // through to a bare publish that leaked created_at = Date.now(). Resolving
+      // the window from the policy closes that hole and matches the submit path
+      // (A2) and releasePendingPublicSubmissions. When a pending entry exists it
+      // carries the same scheduled slot (they are equal in the real flow), so we
+      // prefer it there; without an entry we fall back to the policy-derived
+      // slot so the in-window immediate case is still guarded.
+      const publicationPolicy = this.resolvePublicationPolicy();
+      const policyReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
+      const pendingReleaseEntry = this.state.pendingPublicReleases?.[submissionId];
+      if (policyReleaseAt !== null) {
+        const pendingGraceUntil = publicationPolicy ? questionnairePublicationPolicyGraceUntil(publicationPolicy) : null;
+        const releaseAt = pendingReleaseEntry ? pendingReleaseEntry.releaseAt : policyReleaseAt;
+        const graceUntil = pendingReleaseEntry ? pendingReleaseEntry.graceUntil : pendingGraceUntil;
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        // A missing/expired grace window can no longer release: skipping keeps a
+        // windowed ballot from ever leaking the real vote time (A2/A3).
+        if (graceUntil === null || nowSeconds >= graceUntil) {
+          const rest = { ...(this.state.pendingPublicReleases ?? {}) };
+          if (rest[submissionId]) {
+            delete rest[submissionId];
+            this.state = { ...this.state, pendingPublicReleases: rest };
+            saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+          }
+          optionAFlowLog("voter", "submit_vote_republish_skipped_past_grace", {
+            electionId: this.state.electionId,
+            submissionId,
+            graceUntil,
+            nowSeconds,
+          });
+          this.refreshIssuanceAndAcceptance();
+          return this.state;
+        }
+        if (nowSeconds < releaseAt) {
+          optionAFlowLog("voter", "submit_vote_republish_skipped_pre_release", {
+            electionId: this.state.electionId,
+            submissionId,
+            releaseAt,
+            nowSeconds,
+          });
+          this.refreshIssuanceAndAcceptance();
+          return this.state;
+        }
+        // Already released by the release machinery: do not push it again
+        // (mirrors releasePendingPublicSubmissions).
+        if (pendingReleaseEntry?.releasedAt) {
+          optionAFlowLog("voter", "submit_vote_republish_skipped_released", {
+            electionId: this.state.electionId,
+            submissionId,
+            releasedAt: pendingReleaseEntry.releasedAt,
+            releaseAt,
+          });
+          this.refreshIssuanceAndAcceptance();
+          return this.state;
+        }
+      }
       optionAFlowLog("voter", "submit_vote_republish_existing_public_submission", {
         electionId: this.state.electionId,
         submissionId,
@@ -3673,7 +4034,22 @@ export class QuestionnaireOptionAVoterRuntime {
       const existingCredentialBundle = submissionCredentialBundle(this.state.submission);
       const includeExistingCredentialBundle = Array.isArray(this.state.submission.credentialBundle)
         && this.state.submission.credentialBundle.length > 0;
-      const republished = await publishQuestionnaireBlindResponsePublic({
+      const republishedReleaseAt = pendingReleaseEntry && policyReleaseAt !== null
+        ? pendingReleaseEntry.releaseAt
+        : policyReleaseAt;
+      const republished = republishedReleaseAt !== null
+        // A2: a windowed republish MUST be stamped to the shared release slot,
+        // never the real vote time, so an in-window republish is
+        // indistinguishable from an on-time release. Prefer the pending entry's
+        // scheduled slot when it exists; otherwise use the policy-derived slot
+        // so the guard works even when no entry exists (in-window immediate,
+        // pre-recovery).
+        ? await this.publishStoredSubmissionAtReleaseSlot(
+          this.state.submission,
+          this.state.responseNsec,
+          republishedReleaseAt,
+        )
+        : await publishQuestionnaireBlindResponsePublic({
         responseNsec: this.state.responseNsec,
         questionnaireId: this.state.electionId,
         responseId: this.state.submission.submissionId,
@@ -3695,7 +4071,7 @@ export class QuestionnaireOptionAVoterRuntime {
         },
         tokenProofs: includeExistingCredentialBundle ? existingCredentialBundle.map((proof) => ({
           tokenCommitment: proof.tokenCommitment,
-          questionnaireId: this.state.electionId,
+          questionnaireId: this.electionId,
           signature: proof.credential,
           blindSigningKeyId: proof.blindSigningKeyId,
           questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
@@ -3715,6 +4091,52 @@ export class QuestionnaireOptionAVoterRuntime {
       return this.state;
     }
 
+    // A6: never infer the release mode when the policy is unknown. Falling
+    // through would publish immediately with the real submission timestamp.
+    const publicationPolicy = this.resolvePublicationPolicy();
+    if (!publicationPolicy) {
+      optionAFlowLog("voter", "submit_vote_publication_policy_unknown", {
+        electionId: this.state.electionId,
+        questionIds: targetSubmissionKeys.join(","),
+      });
+      throw new OptionARuntimeError(
+        "invalid_publication_mode",
+        "This device does not know the questionnaire's publication policy, so the ballot was not published. Refresh the questionnaire definition and try again.",
+      );
+    }
+    // A2: the release slot and grace window of a windowed round are fixed at
+    // submit time. A ballot arriving after the grace has elapsed could never be
+    // released, so reject it explicitly instead of queueing a ballot that the
+    // release pass would silently drop (or publishing it with the real time).
+    const windowedReleaseAt = questionnairePublicationPolicyReleaseAt(publicationPolicy);
+    const windowedGraceUntil = questionnairePublicationPolicyGraceUntil(publicationPolicy);
+    // A3: a windowed round MUST define a strictly positive grace. Degrading a
+    // missing/non-positive grace to the release slot yields a zero-width window
+    // that would either drop the ballot or publish with the real submission time,
+    // so raise an explicit invalid-mode error instead of falling through.
+    if (windowedReleaseAt !== null && windowedGraceUntil === null) {
+      optionAFlowLog("voter", "submit_vote_release_grace_missing", {
+        electionId: this.state.electionId,
+        releaseAt: windowedReleaseAt,
+      });
+      throw new OptionARuntimeError(
+        "invalid_publication_mode",
+        "This questionnaire's windowed publication policy has no positive release grace, so the ballot was not published. Ask the coordinator to republish the questionnaire.",
+      );
+    }
+    const submitNowSeconds = Math.floor(Date.now() / 1000);
+    if (windowedReleaseAt !== null && windowedGraceUntil !== null && submitNowSeconds >= windowedGraceUntil) {
+      optionAFlowLog("voter", "submit_vote_release_window_expired", {
+        electionId: this.state.electionId,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+        nowSeconds: submitNowSeconds,
+      });
+      throw new OptionARuntimeError(
+        "release_window_expired",
+        "The release window for this questionnaire has closed, so this ballot was not published.",
+      );
+    }
     const credentialBundle = await this.buildSubmissionCredentialBundle(definition, submissionResponses, {
       credentialIndex: options?.credentialIndex,
     });
@@ -3757,7 +4179,11 @@ export class QuestionnaireOptionAVoterRuntime {
         electionId: this.state.electionId,
         responses: submissionResponses,
       },
-      submittedAt: nowIso(),
+      // A2: freeze the windowed submission's own timestamp to the shared release
+      // slot so a persisted/recovered record never reveals the real vote time.
+      submittedAt: windowedReleaseAt !== null
+        ? new Date(Math.floor(windowedReleaseAt) * 1000).toISOString()
+        : nowIso(),
       credential: primaryCredential.credential,
     };
 
@@ -3787,40 +4213,60 @@ export class QuestionnaireOptionAVoterRuntime {
     this.startVoterDmSubscriptions();
     saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
     void this.publishVoterStateSelfDm({ reason: "submit_vote_created", force: true });
-    const published = await publishQuestionnaireBlindResponsePublic({
-      responseNsec,
-      questionnaireId: this.state.electionId,
-      responseId: submission.submissionId,
-      submittedAt: Number.isFinite(Date.parse(submission.submittedAt))
-        ? Math.floor(Date.parse(submission.submittedAt) / 1000)
-        : Math.floor(Date.now() / 1000),
-      tokenNullifier: submission.nullifier,
-      tokenNullifiers: includeCredentialBundle ? credentialBundle.map((proof) => ({
-        questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
-        tokenNullifier: proof.nullifier,
-        ballotScope: proof.ballotScope ?? null,
-      })) : undefined,
-      tokenProof: {
-        tokenCommitment: submission.tokenCommitment,
-        questionnaireId: this.state.electionId,
-        signature: submission.credential,
-        blindSigningKeyId: submission.blindSigningKeyId,
-        ballotScope: primaryCredential.ballotScope ?? null,
-      },
-        tokenProofs: includeCredentialBundle ? credentialBundle.map((proof) => ({
-          tokenCommitment: proof.tokenCommitment,
-          questionnaireId: submission.electionId,
-          signature: proof.credential,
-          blindSigningKeyId: proof.blindSigningKeyId,
-          questionId: proof.questionId ?? proof.ballotScope?.questionId ?? null,
-          ballotScope: proof.ballotScope ?? null,
-      })) : undefined,
-      answers: toQuestionnaireResponseAnswers(submission.payload.responses, {
-        coordinatorNpub: this.state.coordinatorNpub,
-        responseSecretKey,
-      }),
-      relays: this.getPreferredDmRelays(),
-    });
+    if (windowedReleaseAt !== null && windowedGraceUntil !== null) {
+      if (submitNowSeconds >= windowedReleaseAt) {
+        // A2: the release slot has already arrived, so publish now. The event is
+        // stamped to the shared release slot, never the real submission time, so
+        // a late-but-in-window ballot is indistinguishable from an on-time one.
+        const published = await this.publishStoredSubmissionAtReleaseSlot(submission, responseNsec, windowedReleaseAt);
+        optionAFlowLog("voter", "submit_vote_public_publish_result", {
+          electionId: this.state.electionId,
+          submissionId: submission.submissionId,
+          successes: published?.successes ?? 0,
+          failures: published?.failures ?? 0,
+          releaseAt: windowedReleaseAt,
+        });
+        if (!published || published.successes <= 0) {
+          throw new OptionARuntimeError("dm_delivery_failed", "No relay accepted the public ballot submission.");
+        }
+        await this.publishBallotSubmissionSelfCopyDm(submission, { fallbackNsec: responseNsec });
+        void this.publishVoterStateSelfDm({ reason: "submit_vote_completed", force: true });
+        optionAFlowLog("voter", "submit_vote_released_in_window", {
+          electionId: this.state.electionId,
+          submissionId: submission.submissionId,
+          releaseAt: windowedReleaseAt,
+          responseNpub,
+        });
+        return this.state;
+      }
+      const releaseRecord: PendingPublicRelease = {
+        submissionId: submission.submissionId,
+        submissionKey: targetSubmissionKeys[0] ?? null,
+        responseNsec,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+        releasedAt: null,
+        releasedEventId: null,
+      };
+      this.state = {
+        ...this.state,
+        pendingPublicReleases: {
+          ...(this.state.pendingPublicReleases ?? {}),
+          [submission.submissionId]: releaseRecord,
+        },
+      };
+      saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+      await this.publishBallotSubmissionSelfCopyDm(submission, { fallbackNsec: responseNsec });
+      void this.publishVoterStateSelfDm({ reason: "submit_vote_queued_windowed", force: true });
+      optionAFlowLog("voter", "submit_vote_queued_for_windowed_release", {
+        electionId: this.state.electionId,
+        submissionId: submission.submissionId,
+        releaseAt: windowedReleaseAt,
+        graceUntil: windowedGraceUntil,
+      });
+      return this.getSnapshot() ?? this.state;
+    }
+    const published = await this.publishStoredSubmissionPublic(submission, responseNsec);
     optionAFlowLog("voter", "submit_vote_public_publish_result", {
       electionId: this.state.electionId,
       submissionId: submission.submissionId,
@@ -3838,6 +4284,122 @@ export class QuestionnaireOptionAVoterRuntime {
       responseNpub,
     });
     return this.state;
+  }
+
+  /**
+   * Publishes a windowed submission stamped to its shared release slot (A2).
+   * EVERY windowed publish/release goes through this one helper so the released
+   * event always carries the shared release time and never the real vote time.
+   */
+  private publishStoredSubmissionAtReleaseSlot(
+    submission: BallotSubmission,
+    responseNsec: string,
+    releaseAt: number,
+  ) {
+    const slot = Math.floor(releaseAt);
+    return this.publishStoredSubmissionPublic(submission, responseNsec, {
+      eventCreatedAt: slot,
+      submittedAt: slot,
+    });
+  }
+
+  /**
+   * Releases windowed submissions whose release slot has arrived. Idempotent and
+   * safe to call from focus/visibility handlers and timers: already-released
+   * entries are skipped, and entries past their grace window are dropped.
+   */
+  async releasePendingPublicSubmissions(): Promise<number> {
+    if (!this.state) {
+      return 0;
+    }
+    const pending = this.state.pendingPublicReleases ?? {};
+    const entries = Object.values(pending);
+    if (entries.length === 0) {
+      return 0;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    let releasedCount = 0;
+    let nextState = this.state;
+    let changed = false;
+
+    for (const entry of entries) {
+      if (entry.releasedAt) {
+        continue;
+      }
+      const submission = findStoredSubmission(nextState, entry.submissionId);
+      if (!submission) {
+        // The submission record is gone; drop the orphaned release entry.
+        const rest = { ...(nextState.pendingPublicReleases ?? {}) };
+        delete rest[entry.submissionId];
+        nextState = { ...nextState, pendingPublicReleases: rest };
+        changed = true;
+        continue;
+      }
+      if (nowSeconds < entry.releaseAt) {
+        continue;
+      }
+      if (nowSeconds >= entry.graceUntil) {
+        const rest = { ...(nextState.pendingPublicReleases ?? {}) };
+        delete rest[entry.submissionId];
+        nextState = { ...nextState, pendingPublicReleases: rest };
+        changed = true;
+        optionAFlowLog("voter", "windowed_release_missed_grace", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          graceUntil: entry.graceUntil,
+        });
+        continue;
+      }
+      try {
+        const published = await this.publishStoredSubmissionAtReleaseSlot(submission, entry.responseNsec, entry.releaseAt);
+        if (!published || published.successes <= 0) {
+          optionAFlowLog("voter", "windowed_release_publish_failed", {
+            electionId: nextState.electionId,
+            submissionId: entry.submissionId,
+          });
+          continue;
+        }
+        nextState = {
+          ...nextState,
+          pendingPublicReleases: {
+            ...(nextState.pendingPublicReleases ?? {}),
+            [entry.submissionId]: {
+              ...entry,
+              releasedAt: new Date().toISOString(),
+              releasedEventId: published.eventId,
+            },
+          },
+        };
+        changed = true;
+        releasedCount += 1;
+        optionAFlowLog("voter", "windowed_release_published", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          eventId: published.eventId,
+          releaseAt: entry.releaseAt,
+        });
+      } catch (error) {
+        optionAFlowLog("voter", "windowed_release_publish_threw", {
+          electionId: nextState.electionId,
+          submissionId: entry.submissionId,
+          error: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
+
+    if (!changed) {
+      return releasedCount;
+    }
+    this.state = nextState;
+    saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+    void this.publishVoterStateSelfDm({ reason: "windowed_release", force: true });
+    this.notifyStateChanged();
+    optionAFlowLog("voter", "windowed_release_completed", {
+      electionId: this.state.electionId,
+      releasedCount,
+      remaining: Object.keys(this.state.pendingPublicReleases ?? {}).length,
+    });
+    return releasedCount;
   }
 
   async publishBallotSubmissionDm(
@@ -4937,6 +5499,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
   addBearerInviteCode(codeHash: string, options?: {
     credentialsPerVoter?: QuestionnaireCredentialsPerVoter;
     ballotGroup?: string | null;
+    maxRedemptions?: number;
   }) {
     if (!this.state || !this.coordinatorNpub) {
       throw new OptionARuntimeError("not_logged_in", "Organiser login is required.");
@@ -4955,6 +5518,9 @@ export class QuestionnaireOptionACoordinatorRuntime {
       createdAt: existing?.createdAt ?? nowIso(),
       state: existing?.state === "revoked" ? "revoked" : "available",
       credentialsPerVoter: normaliseQuestionnaireCredentialsPerVoter(options?.credentialsPerVoter ?? existing?.credentialsPerVoter),
+      maxRedemptions: normaliseQuestionnairePrivateInviteMaxRedemptions(
+        options?.maxRedemptions ?? existing?.maxRedemptions,
+      ),
       ballotGroup: options?.ballotGroup !== undefined
         ? normaliseQuestionnaireBallotGroup(options.ballotGroup)
         : existing?.ballotGroup ?? null,
@@ -4963,6 +5529,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
       markedUsedAt: existing?.markedUsedAt ?? null,
       redeemedAt: existing?.redeemedAt ?? null,
       redeemedNpub: existing?.redeemedNpub ?? null,
+      redeemedNpubs: existing?.redeemedNpubs ?? (existing?.redeemedNpub ? [existing.redeemedNpub] : []),
       revokedAt: existing?.revokedAt ?? null,
     };
     this.state = {
@@ -5160,8 +5727,12 @@ export class QuestionnaireOptionACoordinatorRuntime {
     if (!codeEntry || codeEntry.electionId !== this.electionId || codeEntry.state === "revoked") {
       return state;
     }
-    const redeemedNpub = codeEntry.redeemedNpub?.trim() ?? "";
-    if (codeEntry.state === "redeemed" && redeemedNpub && redeemedNpub !== request.invitedNpub) {
+    const redeemedNpubs = [...new Set([
+      ...(codeEntry.redeemedNpubs ?? []),
+      ...(codeEntry.redeemedNpub ? [codeEntry.redeemedNpub] : []),
+    ].map((npub) => npub.trim()).filter(Boolean))];
+    const maxRedemptions = normaliseQuestionnairePrivateInviteMaxRedemptions(codeEntry.maxRedemptions);
+    if (!redeemedNpubs.includes(request.invitedNpub) && redeemedNpubs.length >= maxRedemptions) {
       return state;
     }
 
@@ -5188,11 +5759,16 @@ export class QuestionnaireOptionACoordinatorRuntime {
         claimState: "whitelisted",
       };
 
+    const nextRedeemedNpubs = redeemedNpubs.includes(request.invitedNpub)
+      ? redeemedNpubs
+      : [...redeemedNpubs, request.invitedNpub];
     const redeemedCodeEntry: BearerInviteCodeEntry = {
       ...codeEntry,
-      state: "redeemed",
+      state: nextRedeemedNpubs.length >= maxRedemptions ? "redeemed" : "available",
       redeemedAt,
-      redeemedNpub: request.invitedNpub,
+      redeemedNpub: maxRedemptions === 1 ? request.invitedNpub : null,
+      redeemedNpubs: nextRedeemedNpubs,
+      maxRedemptions,
     };
 
     return {
@@ -5224,8 +5800,14 @@ export class QuestionnaireOptionACoordinatorRuntime {
     if (codeEntry.state === "revoked") {
       return "revoked";
     }
-    const redeemedNpub = codeEntry.redeemedNpub?.trim() ?? "";
-    if (codeEntry.state === "redeemed" && redeemedNpub && redeemedNpub !== request.invitedNpub) {
+    const redeemedNpubs = [...new Set([
+      ...(codeEntry.redeemedNpubs ?? []),
+      ...(codeEntry.redeemedNpub ? [codeEntry.redeemedNpub] : []),
+    ].map((npub) => npub.trim()).filter(Boolean))];
+    if (
+      !redeemedNpubs.includes(request.invitedNpub)
+      && redeemedNpubs.length >= normaliseQuestionnairePrivateInviteMaxRedemptions(codeEntry.maxRedemptions)
+    ) {
       return "redeemed";
     }
     return null;
@@ -5635,7 +6217,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
     return {
       ...issuance,
       definition: undefined,
-      definitionHash: issuance.definitionHash ?? questionnaireDefinitionHash(definition),
+      definitionHash: issuance.definitionHash ?? resolveQuestionnaireDefinitionHash(definition.questionnaireId, definition),
       definitionEventId: issuance.definitionEventId ?? null,
     };
   }
@@ -6012,7 +6594,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
         continue;
       }
       await this.publishBlindRequestAckDm(request);
-      const definitionHash = cachedDefinition ? questionnaireDefinitionHash(cachedDefinition) : null;
+      const definitionHash = resolveQuestionnaireDefinitionHash(cachedDefinition?.questionnaireId, cachedDefinition);
       const existingIssuance = findIssuedBlindResponse(next, request);
       if (existingIssuance) {
         const enriched = this.enrichIssuanceWithDefinitionReference(existingIssuance);

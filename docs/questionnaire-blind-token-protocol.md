@@ -128,6 +128,8 @@ Blind-token admission object:
 - optional `tokenProofs[]` for scoped responses, each carrying `tokenCommitment`, `questionnaireId`, `signature`, `questionId?`, and `ballotScope?`; current per-question submissions carry one scoped entry per submitted ballot index
 - `answers` (public mode) or `encryptedPayload` + `payloadHash` (encrypted mode)
 
+When the definition sets `publicationMode: "windowed"`, the event is not published on submit. It is held locally and released at `closeAt`, with the signed event `created_at` and the payload `submittedAt` both set to that shared release time so the public record carries no per-voter timing. `finalizationGraceSeconds` extends the acceptance window past `closeAt`. Default definitions remain `immediate`.
+
 `ballotScope` canonical fields are `questionId`, `slotId`, `slotIndex`, `version`, and optional `credentialIndex`. The live scope key is `slotIndex + version + credentialIndex`; `questionId` and `slotId` remain descriptive/canonical fields. `credentialIndex` is omitted for the first credential and included as `credential_index` for proxy credential `2`. The signed blind-token message includes the canonical scope when present:
 
 Questionnaire-level credentials may instead carry `allowedScopes`. Scope `0` is Main; an optional second value is a stable voter-group ID from the public definition's `voterGroups` registry. Group IDs are lowercase ASCII identifiers of at most 64 characters. Labels are display metadata and may be renamed without changing the signed scope. Legacy numeric groups `1`-`3` remain valid. A private invite stores its assigned group with the invite-code hash, and the first blind request must carry exactly that configured scope before the code is redeemed.
@@ -154,7 +156,7 @@ Tags:
 
 ### 5.3 Provisional per-question response (`6427`)
 
-Provisional response events are live display hints only. They are not accepted votes and do not carry a blind-token proof.
+Provisional response events are live display hints only. They are not accepted votes and do not carry a blind-token proof. Windowed rounds do not publish provisional events at all: they are signed by the same anonymous key as the final ballot and would reintroduce the timing correlation windowed publication is meant to remove.
 
 - `eventType: "questionnaire_response_provisional"`
 - `questionnaireId`
@@ -228,6 +230,18 @@ Organiser-side verification (especially in encrypted mode) additionally checks:
 - answer schema validity
 - required answers
 - option validity, rank minimums, and free-text length limits
+
+### 8.1 Fail-closed proof verification (observer fold)
+
+Blind-token proof verification in the observer fold is tri-state and fail-closed:
+
+- `valid` — the definition's public blind-signing JWK is present and every proof in the response verifies.
+- `invalid` — the key is present but at least one proof fails verification.
+- `unknown` — the definition's public blind-signing JWK is absent, so the proof cannot be checked.
+
+When proof verification is supplied to the admission fold, enforcement is fail-closed by default: only `valid` proofs are admitted. `invalid` proofs are rejected with reason `invalid_token_proof`; `unknown` proofs are rejected with reason `unknown_token_proof` rather than being silently admitted. A response carrying an `unknown` verdict is never treated as admitted, even when a remote coordinator decision claims to have accepted it.
+
+This replaces the earlier fail-open behaviour where an absent key collapsed every proof to "not verified" and responses were admitted without verification.
 
 ## 9. Private bundle transport
 

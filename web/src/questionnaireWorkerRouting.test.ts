@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { nip19, type Filter, type NostrEvent } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, type Filter, type NostrEvent } from "nostr-tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const querySync = vi.hoisted(() => vi.fn());
@@ -168,7 +168,10 @@ describe("questionnaire worker routing", () => {
   });
 
   it("selects the latest definition signed and declared by the organiser", async () => {
-    const otherHex = "c".repeat(64);
+    const coordinatorSecretKey = generateSecretKey();
+    const coordinatorHex = getPublicKey(coordinatorSecretKey);
+    const coordinatorNpub = nip19.npubEncode(coordinatorHex);
+    const otherSecretKey = generateSecretKey();
     const definition = {
       schemaVersion: 1,
       eventType: "questionnaire_definition",
@@ -176,21 +179,16 @@ describe("questionnaire worker routing", () => {
       coordinatorPubkey: coordinatorNpub,
       questions: [],
     };
-    const validEvent = {
-      id: "valid-definition",
+    const validEvent = finalizeEvent({
       kind: 6420,
-      pubkey: coordinatorHex,
       created_at: 20,
       tags: [["q", "q_public"]],
       content: JSON.stringify(definition),
-      sig: "sig",
-    } as NostrEvent;
-    const wrongAuthorEvent = {
+    }, coordinatorSecretKey);
+    const wrongAuthorEvent = finalizeEvent({
       ...validEvent,
-      id: "wrong-author-definition",
-      pubkey: otherHex,
       created_at: 30,
-    };
+    }, otherSecretKey);
     querySync.mockResolvedValue([wrongAuthorEvent, validEvent]);
 
     const found = await fetchLatestQuestionnaireDefinitionByCoordinator({
@@ -199,10 +197,10 @@ describe("questionnaire worker routing", () => {
       relays: ["wss://relay.nostr.net"],
     });
 
-    expect(found?.event.id).toBe("valid-definition");
+    expect(found?.event.id).toBe(validEvent.id);
     expect(found?.definitionHash).toBe(questionnaireDefinitionEventHash(validEvent.content));
     expect(readCachedQuestionnaireDefinitionReference("q_public")).toMatchObject({
-      definitionEventId: "valid-definition",
+      definitionEventId: validEvent.id,
       definitionHash: questionnaireDefinitionEventHash(validEvent.content),
     });
   });

@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-tests:
+    name: Web unit tests (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The web tests import Rust-wasm helpers (auditable_voting_core / auditable_voting_coordinator_core).
+      # Artifacts are NOT committed, so vitest's pretest hook (ensure-wasm-artifacts.mjs) rebuilds them
+      # from source via wasm-pack. The coordinator core builds with `--features openmls-engine`.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Run web unit tests
+        run: npm test
+        working-directory: web

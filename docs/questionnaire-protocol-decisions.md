@@ -82,3 +82,13 @@ This record freezes the implementation decisions for the questionnaire-first bli
 
 - Historical questionnaire objects are not silently reinterpreted.
 - Missing `responseMode` is treated as legacy compatibility mode.
+- Missing `publicationMode` is treated as `immediate`, preserving existing behaviour.
+
+## 11. Windowed publication (timing mitigation)
+
+- `publicationMode: "windowed"` holds each bound ballot locally and releases all held ballots once at `closeAt`.
+- The signed event `created_at` and the payload `submittedAt` are both set to the shared release timestamp; the real submit time stays local.
+- `finalizationGraceSeconds` (required for windowed, `0`–`2_592_000`) extends acceptance to `closeAt + grace`.
+- Provisional per-question events (`6427`) are not published for windowed rounds.
+- Coordinator and delegated audit proxy must not close or publish the final summary before the grace deadline; summaries published earlier are treated as premature by the client.
+- Pending releases are idempotent: re-publishing the same bound ballot yields the same event id.

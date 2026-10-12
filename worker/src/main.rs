@@ -6,7 +6,7 @@ use crate::config::WorkerConfig;
 #[cfg(test)]
 use crate::model::IMPLEMENTATION_KIND_QUESTIONNAIRE_DEFINITION;
 use crate::model::{
-    is_expired, now_iso, BearerInviteCodeEntry, BlindBallotIssuance,
+    is_expired, now_iso, unix_now, windowed_grace_deadline, BearerInviteCodeEntry, BlindBallotIssuance,
     BlindBallotIssuanceBundleEnvelope, BlindBallotIssuanceEnvelope, BlindBallotPlan,
     BlindBallotPlanEnvelope, BlindBallotRequest, BlindBallotRequestBundleEnvelope,
     BlindBallotRequestEnvelope, BlindIssuanceAck, BlindIssuanceAckEnvelope, BlindTokenProof,
@@ -72,6 +72,8 @@ const COMPLETION_CLOSE_GRACE_SECS: u64 = 5;
 const COMPRESSED_BUNDLE_MESSAGE_TYPE: &str = "optiona_compressed_bundle_dm";
 const COMPRESSED_BUNDLE_ENCODING: &str = "gzip+base64url";
 const BUNDLE_COMPRESSION_THRESHOLD_BYTES: usize = 8 * 1024;
+const COMPRESSED_BUNDLE_MAX_BYTES: usize = 256 * 1024;
+const UNCOMPRESSED_BUNDLE_MAX_BYTES: usize = 1024 * 1024;
 const GENERAL_INVITE_POW_DOMAIN: &str = "auditable-voting-general-invite-pow:v1";
 const GENERAL_INVITE_POW_MAX_DIFFICULTY: u8 = 24;
 const DISCOURAGED_WORKER_READ_RELAYS: &[&str] = &[
@@ -465,18 +467,26 @@ fn unwrap_compressed_bundle_value(value: serde_json::Value) -> Result<serde_json
     {
         anyhow::bail!("unsupported compressed bundle envelope");
     }
+    if envelope.compressed_length > COMPRESSED_BUNDLE_MAX_BYTES
+        || envelope.original_length > UNCOMPRESSED_BUNDLE_MAX_BYTES
+        || envelope.payload.len() > COMPRESSED_BUNDLE_MAX_BYTES * 2
+    {
+        anyhow::bail!("compressed bundle exceeds the supported size");
+    }
     let compressed = URL_SAFE_NO_PAD
         .decode(envelope.payload.as_bytes())
         .context("invalid compressed bundle payload")?;
     if compressed.len() != envelope.compressed_length {
         anyhow::bail!("compressed bundle length mismatch");
     }
-    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut decoder = GzDecoder::new(compressed.as_slice()).take((UNCOMPRESSED_BUNDLE_MAX_BYTES + 1) as u64);
     let mut content = String::new();
     decoder
         .read_to_string(&mut content)
         .context("invalid compressed bundle gzip payload")?;
-    if content.as_bytes().len() != envelope.original_length {
+    if content.as_bytes().len() > UNCOMPRESSED_BUNDLE_MAX_BYTES
+        || content.as_bytes().len() != envelope.original_length
+    {
         anyhow::bail!("compressed bundle length mismatch");
     }
     let inner: serde_json::Value =
@@ -1016,6 +1026,18 @@ fn blind_response_token_commitments(submission: &QuestionnaireBlindResponseEvent
         .collect::<Vec<_>>()
 }
 
+fn public_response_event_is_authentic(
+    event: &Event,
+    submission: &QuestionnaireBlindResponseEvent,
+) -> bool {
+    event.verify().is_ok()
+        && event
+            .pubkey
+            .to_bech32()
+            .ok()
+            .is_some_and(|pubkey| pubkey == submission.author_pubkey.trim())
+}
+
 fn definition_blind_signing_key_id(definition: &Option<serde_json::Value>) -> Option<String> {
     definition
         .as_ref()
@@ -1057,6 +1079,12 @@ fn normalize_invite_code_hash(value: &str) -> Option<String> {
     Some(normalized)
 }
 
+const MAX_BEARER_INVITE_REDEMPTIONS: usize = 10_000;
+
+fn normalize_bearer_invite_max_redemptions(value: Option<usize>) -> usize {
+    value.unwrap_or(1).clamp(1, MAX_BEARER_INVITE_REDEMPTIONS)
+}
+
 fn normalize_ballot_group(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     if normalized.is_empty() || normalized == "main" || normalized == "0" {
@@ -1080,11 +1108,39 @@ fn merge_bearer_invite_codes(election: &mut ElectionRuntimeState, codes: &[Beare
             continue;
         }
         let existing = election.bearer_invite_codes.get(&code_hash).cloned();
-        let next = match (existing, incoming.state.as_str()) {
-            (Some(existing), _) if existing.state == "redeemed" => existing,
-            (_, "available" | "redeemed" | "revoked") => {
+        let next = match incoming.state.as_str() {
+            "available" | "redeemed" | "revoked" => {
                 let mut next = incoming.clone();
                 next.code_hash = code_hash.clone();
+                let mut redeemed_npubs = existing
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|entry| entry.redeemed_npubs.iter().cloned())
+                    .chain(
+                        existing
+                            .as_ref()
+                            .and_then(|entry| entry.redeemed_npub.clone()),
+                    )
+                    .chain(next.redeemed_npubs.iter().cloned())
+                    .chain(next.redeemed_npub.clone())
+                    .collect::<Vec<_>>();
+                redeemed_npubs.sort();
+                redeemed_npubs.dedup();
+                let max_redemptions = normalize_bearer_invite_max_redemptions(next.max_redemptions);
+                next.max_redemptions = Some(max_redemptions);
+                next.redeemed_npubs = redeemed_npubs;
+                next.redeemed_npub = if max_redemptions == 1 {
+                    next.redeemed_npubs.first().cloned()
+                } else {
+                    None
+                };
+                if next.state != "revoked" {
+                    next.state = if next.redeemed_npubs.len() >= max_redemptions {
+                        "redeemed".to_string()
+                    } else {
+                        "available".to_string()
+                    };
+                }
                 next.ballot_group = next
                     .ballot_group
                     .as_deref()
@@ -1178,6 +1234,15 @@ fn election_has_pending_completion_work(election: &ElectionRuntimeState) -> bool
         || !election.deferred_blind_request_ids.is_empty()
     {
         return false;
+    }
+    if let Some(deadline) = election
+        .definition
+        .as_ref()
+        .and_then(windowed_grace_deadline)
+    {
+        if unix_now() < deadline {
+            return false;
+        }
     }
     let publish_summary = election
         .capabilities
@@ -1443,11 +1508,32 @@ fn authorize_blind_request(
             return BlindRequestAuthorization::Rejected;
         }
         match entry.state.as_str() {
+            "available" if entry.redeemed_npubs.contains(&request.invited_npub) => {
+                return BlindRequestAuthorization::Authorized {
+                    state_changed: false,
+                };
+            }
             "available" => {
+                let max_redemptions = normalize_bearer_invite_max_redemptions(entry.max_redemptions);
+                if entry.redeemed_npubs.len() >= max_redemptions {
+                    entry.state = "redeemed".to_string();
+                    return BlindRequestAuthorization::Rejected;
+                }
                 let redeemed_at = now_iso();
-                entry.state = "redeemed".to_string();
+                entry.redeemed_npubs.push(request.invited_npub.clone());
+                entry.redeemed_npubs.sort();
+                entry.redeemed_npubs.dedup();
+                entry.state = if entry.redeemed_npubs.len() >= max_redemptions {
+                    "redeemed".to_string()
+                } else {
+                    "available".to_string()
+                };
                 entry.redeemed_at = Some(redeemed_at);
-                entry.redeemed_npub = Some(request.invited_npub.clone());
+                entry.redeemed_npub = if max_redemptions == 1 {
+                    Some(request.invited_npub.clone())
+                } else {
+                    None
+                };
                 election
                     .whitelist_npubs
                     .insert(request.invited_npub.clone());
@@ -1465,7 +1551,10 @@ fn authorize_blind_request(
                     state_changed: true,
                 };
             }
-            "redeemed" if entry.redeemed_npub.as_deref() == Some(request.invited_npub.as_str()) => {
+            "redeemed"
+                if entry.redeemed_npubs.contains(&request.invited_npub)
+                    || entry.redeemed_npub.as_deref() == Some(request.invited_npub.as_str()) =>
+            {
                 let inserted = election
                     .whitelist_npubs
                     .insert(request.invited_npub.clone());
@@ -3519,6 +3608,14 @@ impl WorkerRuntime {
                 }
             };
 
+        if !public_response_event_is_authentic(event, &submission) {
+            warn!(
+                "ignored unauthenticated blind response event {}",
+                event.id
+            );
+            return Ok(false);
+        }
+
         let should_handle = {
             let state = self.state.lock().await;
             if let Some(election) = state.elections.get(&submission.questionnaire_id) {
@@ -3696,6 +3793,15 @@ impl WorkerRuntime {
                     let accepted_unique = entry.accepted_response_count;
                     if accepted_unique < expected || !entry.deferred_blind_request_ids.is_empty() {
                         return None;
+                    }
+                    if let Some(deadline) = entry
+                        .definition
+                        .as_ref()
+                        .and_then(windowed_grace_deadline)
+                    {
+                        if unix_now() < deadline {
+                            return None;
+                        }
                     }
                     let close_questionnaire = entry
                         .capabilities
@@ -4669,13 +4775,21 @@ fn build_result_pack_csv(
 }
 
 fn csv_cell(value: &str) -> String {
-    if value
+    let safe = if value
+        .trim_start_matches(|ch: char| ch.is_ascii_whitespace())
+        .starts_with(['=', '+', '-', '@'])
+    {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    if safe
         .chars()
         .any(|ch| matches!(ch, ',' | '"' | '\r' | '\n'))
     {
-        format!("\"{}\"", value.replace('"', "\"\""))
+        format!("\"{}\"", safe.replace('"', "\"\""))
     } else {
-        value.to_string()
+        safe
     }
 }
 
@@ -4906,6 +5020,92 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn definition_hash_vectors_match_the_shared_fixture() {
+        // Track B / B1. `web/src/fixtures/questionnaireDefinitionHashVectors.json` carries, for
+        // every committed wire form of a questionnaire definition, the canonical JSON pre-image
+        // and the real SHA-256 of that pre-image. The web suite pins the pre-image and
+        // reproduces the digest with `node:crypto` (it cannot use the app's SHA-256 in unit
+        // tests: vite.config.ts substitutes an FNV-1a mock). This test pins the worker's half of
+        // the same contract with the real thing: it re-parses each wire form, canonicalises it
+        // through the production `canonical_json`, and checks both the pre-image and the digest
+        // against the shared fixture. If either implementation drifts, one of the two sides
+        // fails on the same committed bytes.
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../web/src/fixtures/questionnaireDefinitionHashVectors.json");
+        let raw = fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", fixture_path.display()));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("definition hash fixture is valid JSON");
+        assert_eq!(
+            fixture
+                .get("algorithm")
+                .and_then(serde_json::Value::as_str)
+                .map(|entry| entry.starts_with("sha256")),
+            Some(true),
+            "fixture must declare a sha256 algorithm"
+        );
+        let vectors = fixture
+            .get("vectors")
+            .and_then(serde_json::Value::as_array)
+            .expect("fixture carries a vectors array");
+        assert!(!vectors.is_empty(), "fixture must not be empty");
+
+        let mut checked_forms = 0usize;
+        for vector in vectors {
+            let name = vector
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unnamed>");
+            let expected_digest = vector
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("{name}: vector is missing sha256"));
+            assert_eq!(
+                expected_digest.len(),
+                64,
+                "{name}: fixture digest is not a sha256 hex string"
+            );
+            let forms = vector
+                .get("forms")
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or_else(|| panic!("{name}: vector is missing forms"));
+            assert!(!forms.is_empty(), "{name}: vector carries no wire forms");
+            for form in forms {
+                let content = form
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| panic!("{name}: form is missing content"));
+                let expected_canonical = form
+                    .get("canonical")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| panic!("{name}: form is missing canonical"));
+                let parsed: serde_json::Value = serde_json::from_str(content)
+                    .unwrap_or_else(|error| panic!("{name}: content is not valid JSON: {error}"));
+                let canonical = canonical_json(&parsed);
+                assert_eq!(
+                    canonical, expected_canonical,
+                    "{name}: canonical pre-image drifted from the shared fixture"
+                );
+                assert_eq!(
+                    sha256_hex(&canonical),
+                    expected_digest,
+                    "{name}: digest drifted from the shared fixture"
+                );
+                assert_eq!(
+                    questionnaire_definition_hash(&parsed),
+                    expected_digest,
+                    "{name}: questionnaire_definition_hash disagrees with the fixture"
+                );
+                checked_forms += 1;
+            }
+        }
+        assert!(
+            checked_forms >= 3,
+            "expected at least three shared wire forms, checked {checked_forms}"
+        );
+    }
 
     #[test]
     fn persisted_state_is_reset_when_worker_identity_changes() {
@@ -5552,9 +5752,11 @@ mod tests {
                 created_at: now_iso(),
                 state: "available".to_string(),
                 credentials_per_voter: None,
+                max_redemptions: None,
                 ballot_group: None,
                 redeemed_at: None,
                 redeemed_npub: None,
+                redeemed_npubs: vec![],
                 revoked_at: None,
             }]),
             eligibility_required: Some(true),
@@ -6531,6 +6733,38 @@ mod tests {
         assert!(!verify_blind_response_proofs(&election, &tampered_scope));
     }
 
+    #[test]
+    fn public_response_requires_a_valid_matching_outer_signature() {
+        let response_keys = Keys::generate();
+        let other_keys = Keys::generate();
+        let mut submission = signed_submission(
+            &test_definition_and_keypair("q_outer_signature").1,
+            "q_outer_signature",
+            "response_outer_signature",
+            "commitment_outer_signature",
+            "nullifier_outer_signature",
+        );
+        submission.author_pubkey = response_keys
+            .public_key()
+            .to_bech32()
+            .expect("response npub");
+        let event = EventBuilder::new(
+            Kind::Custom(IMPLEMENTATION_KIND_QUESTIONNAIRE_RESPONSE_BLIND),
+            serde_json::to_string(&submission).expect("serialize submission"),
+        )
+        .sign_with_keys(&response_keys)
+        .expect("sign response event");
+        assert!(public_response_event_is_authentic(&event, &submission));
+
+        let mismatched_event = EventBuilder::new(
+            Kind::Custom(IMPLEMENTATION_KIND_QUESTIONNAIRE_RESPONSE_BLIND),
+            serde_json::to_string(&submission).expect("serialize submission"),
+        )
+        .sign_with_keys(&other_keys)
+        .expect("sign mismatched response event");
+        assert!(!public_response_event_is_authentic(&mismatched_event, &submission));
+    }
+
     #[tokio::test]
     async fn handle_submission_requires_valid_proof_and_rejects_commitment_replay() {
         let questionnaire_id = "q_handle_verified_submission";
@@ -6768,9 +7002,11 @@ mod tests {
                     created_at: now_iso(),
                     state: "available".to_string(),
                     credentials_per_voter: None,
+                    max_redemptions: None,
                     ballot_group: None,
                     redeemed_at: None,
                     redeemed_npub: None,
+                    redeemed_npubs: vec![],
                     revoked_at: None,
                 },
             )]),
@@ -6826,9 +7062,11 @@ mod tests {
                     created_at: now_iso(),
                     state: "available".to_string(),
                     credentials_per_voter: Some(2),
+                    max_redemptions: None,
                     ballot_group: None,
                     redeemed_at: None,
                     redeemed_npub: None,
+                    redeemed_npubs: vec![],
                     revoked_at: None,
                 },
             )]),
@@ -6864,6 +7102,91 @@ mod tests {
             &election,
             &second_credential_request
         ));
+    }
+
+    #[test]
+    fn private_invite_code_authorizes_each_claimant_up_to_its_limit() {
+        let code_hash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let mut election = ElectionRuntimeState {
+            election_id: "q_worker_definition".to_string(),
+            eligibility_required: true,
+            bearer_invite_codes: HashMap::from([(
+                code_hash.to_string(),
+                BearerInviteCodeEntry {
+                    election_id: "q_worker_definition".to_string(),
+                    code_hash: code_hash.to_string(),
+                    created_at: now_iso(),
+                    state: "available".to_string(),
+                    credentials_per_voter: None,
+                    max_redemptions: Some(2),
+                    ballot_group: None,
+                    redeemed_at: None,
+                    redeemed_npub: None,
+                    redeemed_npubs: vec![],
+                    revoked_at: None,
+                },
+            )]),
+            ..ElectionRuntimeState::default()
+        };
+        let mut first_request = sample_request();
+        first_request.invite_code_hash = Some(code_hash.to_string());
+        let mut second_request = first_request.clone();
+        second_request.invited_npub =
+            "npub1secondsharedinvitee000000000000000000000000000000000000".to_string();
+        let mut third_request = first_request.clone();
+        third_request.invited_npub =
+            "npub1thirdsharedinvitee0000000000000000000000000000000000000".to_string();
+
+        assert!(matches!(
+            authorize_blind_request(&mut election, &first_request),
+            BlindRequestAuthorization::Authorized { .. }
+        ));
+        assert!(matches!(
+            authorize_blind_request(&mut election, &second_request),
+            BlindRequestAuthorization::Authorized { .. }
+        ));
+        assert_eq!(
+            authorize_blind_request(&mut election, &third_request),
+            BlindRequestAuthorization::Rejected
+        );
+        let entry = election
+            .bearer_invite_codes
+            .get(code_hash)
+            .expect("invite code");
+        assert_eq!(entry.state, "redeemed");
+        assert_eq!(entry.redeemed_npubs.len(), 2);
+    }
+
+    #[test]
+    fn private_invite_code_capacity_is_capped() {
+        let mut election = ElectionRuntimeState {
+            election_id: "q_worker_definition".to_string(),
+            ..ElectionRuntimeState::default()
+        };
+        merge_bearer_invite_codes(
+            &mut election,
+            &[BearerInviteCodeEntry {
+                election_id: "q_worker_definition".to_string(),
+                code_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                created_at: now_iso(),
+                state: "available".to_string(),
+                credentials_per_voter: None,
+                max_redemptions: Some(100_001),
+                ballot_group: None,
+                redeemed_at: None,
+                redeemed_npub: None,
+                redeemed_npubs: vec![],
+                revoked_at: None,
+            }],
+        );
+
+        assert_eq!(
+            election
+                .bearer_invite_codes
+                .get("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+                .and_then(|entry| entry.max_redemptions),
+            Some(10_000)
+        );
     }
 
     #[test]
@@ -7090,6 +7413,32 @@ mod tests {
         );
         assert_eq!(decoded_envelope.requests.len(), 1);
         assert!(decoded_envelope.requests[0].blinded_message.len() > 16_000);
+    }
+
+    #[test]
+    fn compressed_bundle_rejects_declared_oversize_payload() {
+        let wrapper = serde_json::json!({
+            "type": COMPRESSED_BUNDLE_MESSAGE_TYPE,
+            "schemaVersion": 1,
+            "encoding": COMPRESSED_BUNDLE_ENCODING,
+            "innerType": "optiona_blind_request_bundle_dm",
+            "payload": "",
+            "compressedLength": 0,
+            "originalLength": UNCOMPRESSED_BUNDLE_MAX_BYTES + 1,
+            "sentAt": "2026-04-23T00:00:00Z",
+        });
+
+        assert!(unwrap_compressed_bundle_value(wrapper).is_err());
+    }
+
+    #[test]
+    fn csv_cells_neutralize_spreadsheet_formulas() {
+        assert_eq!(csv_cell("=SUM(A1:A2)"), "'=SUM(A1:A2)");
+        assert_eq!(
+            csv_cell("  @HYPERLINK(\"https://example.com\")"),
+            "\"'  @HYPERLINK(\"\"https://example.com\"\")\""
+        );
+        assert_eq!(csv_cell("ordinary answer"), "ordinary answer");
     }
 
     #[tokio::test]
