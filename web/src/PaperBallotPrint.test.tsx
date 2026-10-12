@@ -4,14 +4,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import React from "react";
 import PaperBallotPrint from "./PaperBallotPrint";
 import { maskNsec, type PaperBallot } from "./paperBallot";
+import { makeTestVoterIdentity } from "./testFixtures";
 
 vi.mock("qrcode", () => ({
   default: { toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,MOCKQR") },
 }));
 
 // Realistic test fixture: the nsec is a REAL credential for the voter it names.
-const VOTER_NSEC = "nsec1abcdefghijklmnopqrstuv01234567890123456789012345678901234wxyz9";
-const VOTER_NPUB = "npub1fakefakefakefakefakefakefakefakefakefakefakefakefakefakefakef";
+// Generated per process — no key literal lives in this file (see testFixtures.ts).
+const { nsec: VOTER_NSEC, npub: VOTER_NPUB } = makeTestVoterIdentity();
 
 function baseBallot(): PaperBallot {
   return {

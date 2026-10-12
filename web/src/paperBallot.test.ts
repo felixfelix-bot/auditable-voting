@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { generatePaperBallot } from "./paperBallot";
 import type { QuestionnaireDefinition } from "./questionnaireProtocol";
 import { deriveNpubFromNsec } from "./nostrIdentity";
+import { makeTestVoterIdentity } from "./testFixtures";
 
-const TEST_NSEC = "nsec1c6gfkn8p0kcjn3dws63hgllgu6pa5q37ag084jzg8g6nnkpztxdq6zs0r2";
-const TEST_NPUB = "npub1w7vr0zenyuhtzhzwa7yne4zw3gw0aq8mp30r2f9p99e365lh757q77pvrv";
+// Generated per process — no key literal lives in this file (see testFixtures.ts).
+const { nsec: TEST_NSEC, npub: TEST_NPUB } = makeTestVoterIdentity();
 
 const minimalDefinition: QuestionnaireDefinition = {
   schemaVersion: 1,
