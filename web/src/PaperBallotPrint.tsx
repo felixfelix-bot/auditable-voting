@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import type { PaperBallot } from "./paperBallot";
+import { maskNsec } from "./paperBallot";
 import { DEFAULT_NOSTR_PUBLIC_RELAYS } from "./nostrRelayConfig";
 
 interface PaperBallotPrintProps {
@@ -9,6 +10,7 @@ interface PaperBallotPrintProps {
 
 export default function PaperBallotPrint({ ballot }: PaperBallotPrintProps) {
   const [npubQrDataUrl, setNpubQrDataUrl] = useState<string | null>(null);
+  const [nsecRevealed, setNsecRevealed] = useState(false);
 
   useEffect(() => {
     void QRCode.toDataURL(ballot.voterNpub, {
@@ -28,6 +30,9 @@ export default function PaperBallotPrint({ ballot }: PaperBallotPrintProps) {
       <div className="ballot-header">
         <h1 className="ballot-title">{ballot.questionnaireTitle}</h1>
         <p className="ballot-id">Ballot ID: {ballot.questionnaireId}</p>
+        {ballot.serialNumber && (
+          <p className="ballot-serial">Serial: {ballot.serialNumber}</p>
+        )}
       </div>
 
       {/* Questions */}
@@ -91,7 +96,17 @@ export default function PaperBallotPrint({ ballot }: PaperBallotPrintProps) {
           <div className="ballot-voter-keys">
             <div className="ballot-key-row">
               <span className="ballot-key-label">nsec:</span>
-              <code className="ballot-key-value">{ballot.voterNsec}</code>
+              <code className="ballot-key-value">
+                {nsecRevealed ? ballot.voterNsec : maskNsec(ballot.voterNsec)}
+              </code>
+              <button
+                type="button"
+                className="ballot-key-reveal"
+                onClick={() => setNsecRevealed(true)}
+                aria-pressed={nsecRevealed}
+              >
+                {nsecRevealed ? "Shown" : "Reveal"}
+              </button>
             </div>
             <div className="ballot-key-row">
               <span className="ballot-key-label">npub:</span>
