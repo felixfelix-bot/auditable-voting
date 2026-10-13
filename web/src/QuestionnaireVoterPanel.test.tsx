@@ -256,3 +256,48 @@ describe("QuestionnaireVoterPanel conditional rendering", () => {
     expect(answerQuestionIds).not.toContain("q2");
   });
 });
+
+describe("QuestionnaireVoterPanel hostile definition handling (B4)", () => {
+  it("renders the panel with no crash and surfaces invalid_questionnaire", async () => {
+    // A self-referential showIf: hostile input that previously crashed the panel.
+    questionnaireNostrMocks.fetchQuestionnaireEventsWithFallback.mockImplementation(async (input) => {
+      if (input.kind === IMPLEMENTATION_KIND_QUESTIONNAIRE_DEFINITION) {
+        const hostile = buildDefinition();
+        hostile.questions[1].showIf = {
+          dependsOnQuestionId: "q2",
+          requiredAnswer: { answerType: "yes_no" as const, value: true },
+        };
+        return {
+          events: [{ ...buildDefinitionEvent(), content: JSON.stringify(hostile) }],
+          diagnostics: { mode: "filtered" as const, filteredCount: 1, kindOnlyCount: 0 },
+        };
+      }
+      if (input.kind === IMPLEMENTATION_KIND_QUESTIONNAIRE_STATE) {
+        return {
+          events: [buildStateEvent()],
+          diagnostics: { mode: "filtered" as const, filteredCount: 1, kindOnlyCount: 0 },
+        };
+      }
+      return {
+        events: [],
+        diagnostics: { mode: "filtered" as const, filteredCount: 0, kindOnlyCount: 0 },
+      };
+    });
+
+    render(<QuestionnaireVoterPanel announcedQuestionnaireIds={[QUESTIONNAIRE_ID]} />);
+
+    // No crash: the self-referential Q2 fails closed and Q1 still renders.
+    await waitFor(() => {
+      expect(screen.getByText(/Primary question/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Follow-up question/)).toBeNull();
+
+    // The hostile definition is reported, not silently accepted.
+    await waitFor(() => {
+      const debug = (globalThis as typeof globalThis & {
+        __questionnaireVoterDebug?: { lastQuestionnaireRejectReason?: string | null };
+      }).__questionnaireVoterDebug;
+      expect(debug?.lastQuestionnaireRejectReason).toBe("invalid_questionnaire");
+    });
+  });
+});

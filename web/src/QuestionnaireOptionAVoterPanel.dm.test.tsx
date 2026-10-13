@@ -3332,3 +3332,64 @@ describe("QuestionnaireOptionAVoterPanel DM retrieval", () => {
     expect(within(receiptRegion).queryByText(firstResponseNpub)).toBeNull();
   });
 });
+
+describe("QuestionnaireOptionAVoterPanel hostile definition handling (B4)", () => {
+  it("renders the panel with no crash and surfaces invalid_questionnaire", async () => {
+    const user = userEvent.setup();
+    window.history.pushState(null, "", "/?role=voter&q=q_hostile_link");
+    fetchOptionAInviteDmsMock.mockResolvedValue([]);
+    fetchQuestionnaireDefinitionsMock.mockResolvedValue([{
+      event: { created_at: 20 },
+      definition: {
+        schemaVersion: 1,
+        eventType: "questionnaire_definition",
+        responseMode: "blind_token",
+        questionnaireId: "q_hostile_link",
+        title: "Hostile questionnaire",
+        description: "",
+        createdAt: 1,
+        openAt: 1,
+        closeAt: 9999999999,
+        coordinatorPubkey: "npub1" + "b".repeat(58),
+        coordinatorEncryptionPubkey: "npub1" + "b".repeat(58),
+        responseVisibility: "private",
+        eligibilityMode: "open",
+        allowMultipleResponsesPerPubkey: false,
+        questions: [
+          {
+            questionId: "q1",
+            type: "yes_no",
+            prompt: "Safe prompt",
+            required: true,
+          },
+          {
+            // Self-referential showIf: hostile input that used to crash the panel.
+            questionId: "q2",
+            type: "yes_no",
+            prompt: "Hostile prompt",
+            required: false,
+            showIf: {
+              dependsOnQuestionId: "q2",
+              requiredAnswer: { answerType: "yes_no", value: true },
+            },
+          },
+        ],
+      },
+    } as Awaited<ReturnType<typeof fetchQuestionnaireDefinitions>>[number]]);
+
+    render(<QuestionnaireOptionAVoterPanel />);
+
+    // No crash: the healthy question still renders.
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText(/Safe prompt/);
+
+    // The hostile definition is reported, not silently accepted.
+    await waitFor(() => {
+      const debug = (globalThis as typeof globalThis & {
+        __questionnaireVoterDebug?: { definitionIsInvalidQuestionnaire?: boolean; lastQuestionnaireRejectReason?: string | null };
+      }).__questionnaireVoterDebug;
+      expect(debug?.definitionIsInvalidQuestionnaire).toBe(true);
+      expect(debug?.lastQuestionnaireRejectReason).toBe("invalid_questionnaire");
+    });
+  });
+});

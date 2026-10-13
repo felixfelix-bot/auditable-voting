@@ -6,6 +6,7 @@ import {
   fetchQuestionnaireDefinitions,
   fetchQuestionnairePrivateInviteStatus,
 } from "./questionnaireTransport";
+import { isQuestionnaireDefinitionValidForRead } from "./questionnaireNostr";
 import { buildQuestionnaireInviteUrl, parseInviteFromUrl } from "./questionnaireInvite";
 import { createSignerService, SignerServiceError, type SignerService } from "./services/signerService";
 import {
@@ -1061,9 +1062,31 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     if (!currentDefinition || !currentDefinition.questions.some((question) => question.showIf)) {
       return new Set<string>();
     }
+    // B4: derive the answers for the visibility check from the definition and
+    // the raw answer map directly. Calling `buildDraftResponsesForCredential`
+    // here would reach `answerKeyForQuestion`, which is declared below this
+    // hook and is therefore in its temporal dead zone - every definition that
+    // used `showIf` crashed the Option-A panel with a ReferenceError before
+    // this was fixed.
+    const answeredForVisibility: QuestionnaireAnswer[] = [];
+    for (const question of currentDefinition.questions) {
+      const key = showProxyBallotsTogether
+        ? proxyAnswerKey(question.questionId, activeCredentialIndex)
+        : question.questionId;
+      const answer = answerToOptionA(
+        question,
+        answers[key],
+        question.type === "free_text"
+          ? Boolean(question.encryptResponses || encryptFreeTextByQuestionId[key])
+          : false,
+      );
+      if (answer) {
+        answeredForVisibility.push(answer);
+      }
+    }
     const visible = visibleQuestionIds(
       currentDefinition,
-      optionAAnswersForVisibility(buildDraftResponsesForCredential(activeCredentialIndex)),
+      optionAAnswersForVisibility(answeredForVisibility),
     );
     return new Set(
       questions
@@ -3951,6 +3974,16 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       __questionnaireVoterDebug?: unknown;
     };
     const targetQuestionnaireId = currentQuestionnaireId || electionId.trim();
+    /**
+     * B4: the definition the panel is currently showing is hostile or structurally
+     * invalid. It was validated on the ingest / cache read path, so this is the
+     * same verdict the boundary produced, not a second opinion. The panel still
+     * renders (fail closed hides questions, it does not crash), but the flag is
+     * surfaced so `invalid_questionnaire` is not silently swallowed.
+     */
+    const definitionIsInvalidQuestionnaire = Boolean(
+      currentDefinition && !isQuestionnaireDefinitionValidForRead(currentDefinition),
+    );
     const snapshotForTarget = snapshot?.electionId === targetQuestionnaireId ? snapshot : null;
     const debugSubmitButtonText = voteActionButtonText;
     const questionnaireSeen = questions.length > 0 || Boolean(autoRequestDefinition);
@@ -4029,6 +4062,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       activeInviteElectionId: activeInvite?.electionId ?? null,
       pendingInviteCount: contextPendingInvites.length,
       latestAnnouncedQuestionnaireId: latestAnnouncedQuestionnaireId || null,
+      // B4: surface a hostile/invalid definition on the read path instead of
+      // silently rendering it. Fail closed = its questions are hidden.
+      lastQuestionnaireRejectReason: definitionIsInvalidQuestionnaire ? "invalid_questionnaire" : null,
+      definitionIsInvalidQuestionnaire,
     };
     return () => {
       const current = owner.__questionnaireVoterDebug as { mode?: unknown } | null | undefined;

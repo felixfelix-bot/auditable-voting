@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { generateSecretKey, nip19, type NostrEvent } from "nostr-tools";
-import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQuestionnaireReadRelays, parseQuestionnaireDefinitionEvent, parseQuestionnaireResponseEnvelope, parseQuestionnaireStateEvent, publishEncryptedQuestionnaireResponse, queryQuestionnaireEvents, QUESTIONNAIRE_DEFINITION_KIND, QUESTIONNAIRE_RESPONSE_PRIVATE_KIND, QUESTIONNAIRE_RESULT_SUMMARY_KIND, QUESTIONNAIRE_STATE_KIND, subscribeQuestionnaireEventKinds } from "./questionnaireNostr";
+import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQuestionnaireReadRelays, isQuestionnaireDefinitionValidForRead, parseQuestionnaireDefinitionEvent, parseQuestionnaireResponseEnvelope, parseQuestionnaireStateEvent, publishEncryptedQuestionnaireResponse, queryQuestionnaireEvents, QUESTIONNAIRE_DEFINITION_KIND, QUESTIONNAIRE_RESPONSE_PRIVATE_KIND, QUESTIONNAIRE_RESULT_SUMMARY_KIND, QUESTIONNAIRE_STATE_KIND, subscribeQuestionnaireEventKinds } from "./questionnaireNostr";
 import { formatQuestionnaireStateLabel, formatQuestionnaireTokenStatusLabel, parseQuestionnaireResultSummaryEvent, selectLatestQuestionnaireDefinition, selectLatestQuestionnaireState } from "./questionnaireRuntime";
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
 import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
@@ -928,6 +928,27 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
         setLastQuestionnaireRejectReason(`state_not_visible:${explicitState ?? "unknown"}`);
       } else {
         setLastQuestionnaireRejectReason(null);
+      }
+      // B4: an ingested definition that fails validation is surfaced as
+      // `invalid_questionnaire` in the selector diagnostics instead of being
+      // silently accepted. The panel still renders (fail closed = hostile
+      // questions hide, the voter is not crashed), but the caller can now tell
+      // the definition was hostile rather than healthy.
+      if (latestDefinition && !isQuestionnaireDefinitionValidForRead(latestDefinition)) {
+        // B4: report it through the same diagnostics surface the selector uses,
+        // so `invalid_questionnaire` is visible to the caller and the debug
+        // snapshot rather than the definition being silently accepted.
+        const invalidQuestionnaireId = latestDefinition.questionnaireId;
+        setLastQuestionnaireRejectReason("invalid_questionnaire");
+        setSelectorDiagnostics((current) => ({
+          ...current,
+          rejectCounts: {
+            ...current.rejectCounts,
+            invalid_questionnaire: (current.rejectCounts.invalid_questionnaire ?? 0) + 1,
+          },
+          lastRejectedQuestionnaireId: invalidQuestionnaireId,
+          lastRejectReason: "invalid_questionnaire",
+        }));
       }
       if (!latestDefinition || !isActiveSelectorLifecycle(lifecycle)) {
         setDefinition(null);
