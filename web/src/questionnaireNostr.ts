@@ -19,10 +19,15 @@ import type {
   QuestionnaireStateEvent,
 } from "./questionnaireProtocol";
 import {
+  INVALID_QUESTIONNAIRE_CODE,
   canonicaliseQuestionnaireDefinitionText,
   normaliseQuestionnairePrivateInviteMaxRedemptions,
   normalizeQuestionnaireDefinition,
+  validateQuestionnaireDefinition,
 } from "./questionnaireProtocol";
+// Re-exported so callers that ingest events can import the read-path validation
+// vocabulary from the module they already depend on (B4).
+export { INVALID_QUESTIONNAIRE_CODE };
 import {
   IMPLEMENTATION_KIND_QUESTIONNAIRE_DEFINITION,
   IMPLEMENTATION_KIND_QUESTIONNAIRE_ADMISSION_ANNOUNCEMENT,
@@ -743,8 +748,55 @@ export function subscribeQuestionnaireEvents(input: {
 export function parseQuestionnaireDefinitionEvent(
   event: Pick<NostrEvent, "kind" | "content">,
 ): QuestionnaireDefinition | null {
+  return parseQuestionnaireDefinitionEventWithValidation(event).definition;
+}
+
+/**
+ * Ingest-path validation result (B4). `definition` is still returned so a caller
+ * can render the panel; `invalidQuestionnaire` flags a hostile or structurally
+ * invalid definition that was previously accepted silently.
+ */
+export type QuestionnaireDefinitionIngestResult = {
+  definition: QuestionnaireDefinition | null;
+  valid: boolean;
+  invalidQuestionnaire: boolean;
+  errorCode: string | null;
+  errors: string[];
+};
+
+/**
+ * Check a definition against the same rule set the coordinator uses (B4).
+ *
+ * The read path must not invent a weaker rule set than publish time, so this is
+ * a thin, shared wrapper over `validateQuestionnaireDefinition` rather than a
+ * second validator.
+ */
+export function isQuestionnaireDefinitionValidForRead(definition: QuestionnaireDefinition): boolean {
+  return validateQuestionnaireDefinition(definition).valid;
+}
+
+/**
+ * Parse a definition event AND validate it (B4).
+ *
+ * Ingest previously only checked the envelope shape, so a definition whose
+ * `showIf` graph is cyclic reached the voter render and crashed it. A structurally
+ * invalid definition is now flagged `invalid_questionnaire` here instead of being
+ * silently accepted. The definition is still returned - failing closed means the
+ * *visibility* decision is hidden, not that the voter sees nothing at all - so the
+ * caller decides how loudly to surface the flag.
+ */
+export function parseQuestionnaireDefinitionEventWithValidation(
+  event: Pick<NostrEvent, "kind" | "content">,
+): QuestionnaireDefinitionIngestResult {
+  const empty: QuestionnaireDefinitionIngestResult = {
+    definition: null,
+    valid: false,
+    invalidQuestionnaire: false,
+    errorCode: null,
+    errors: [],
+  };
   if (event.kind !== QUESTIONNAIRE_DEFINITION_KIND) {
-    return null;
+    return empty;
   }
   try {
     const parsed = JSON.parse(event.content) as QuestionnaireDefinition & { responseMode?: QuestionnaireDefinition["responseMode"] };
@@ -754,7 +806,7 @@ export function parseQuestionnaireDefinitionEvent(
       || typeof parsed.questionnaireId !== "string"
       || !Array.isArray(parsed.questions)
     ) {
-      return null;
+      return empty;
     }
     // Definition events written before multi-language support carry plain
     // strings in `title`, `description`, question `prompt` and option `label`.
@@ -763,10 +815,30 @@ export function parseQuestionnaireDefinitionEvent(
     // translations round-trip with every locale preserved. The transformation is
     // idempotent, so it is safe that `normalizeQuestionnaireDefinition` applies
     // the same canonicalisation again.
-    return normalizeQuestionnaireDefinition(canonicaliseQuestionnaireDefinitionText(parsed));
+    const definition = normalizeQuestionnaireDefinition(canonicaliseQuestionnaireDefinitionText(parsed));
+    const validation = validateQuestionnaireDefinition(definition);
+    return {
+      definition,
+      valid: validation.valid,
+      invalidQuestionnaire: !validation.valid,
+      errorCode: validation.valid ? null : INVALID_QUESTIONNAIRE_CODE,
+      errors: validation.errors,
+    };
   } catch {
-    return null;
+    return empty;
   }
+}
+
+/**
+ * Definitions parsed from an ingested event, tagging the invalid ones (B4).
+ *
+ * A thin wrapper for callers that already hold a batch of events and want the
+ * `invalid_questionnaire` flag without re-implementing the parse+validate pair.
+ */
+export function selectValidatedQuestionnaireDefinitions(
+  events: Array<Pick<NostrEvent, "kind" | "content">>,
+): QuestionnaireDefinitionIngestResult[] {
+  return events.map((event) => parseQuestionnaireDefinitionEventWithValidation(event));
 }
 
 export function parseQuestionnaireAdmissionAnnouncementEvent(

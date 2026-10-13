@@ -13,7 +13,7 @@ import {
   normalizeQuestionnaireRelays,
   questionnaireRelaysForMetadata,
 } from "./questionnaireRelays";
-import { shouldShowQuestion } from "./questionConditionEvaluator";
+import { checkForCycle, shouldShowQuestion } from "./questionConditionEvaluator";
 import { isLocalisedText, type LocalisedText } from "./i18n/types";
 
 /**
@@ -418,6 +418,15 @@ export type ValidationResult = {
   errors: string[];
 };
 
+/**
+ * The stable code a hostile or structurally invalid questionnaire definition is
+ * reported under on the read path (B4). Ingest, cache and the voter render all
+ * agree on this string; `questionnaireRuntime.toRejectedReason` already maps the
+ * `invalid_questionnaire` prefix onto its `invalid_questionnaire` rejection
+ * reason, so no consumer needs a second vocabulary.
+ */
+export const INVALID_QUESTIONNAIRE_CODE = "invalid_questionnaire";
+
 function isNonEmpty(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -668,6 +677,9 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
     errors.push("questions_missing");
   } else {
     const questionIds = new Set<string>();
+    const questionMap = new Map<string, QuestionnaireQuestion>(
+      input.questions.map((question) => [question.questionId, question]),
+    );
     for (const [index, question] of input.questions.entries()) {
       if (!isNonEmpty(question.questionId)) {
         errors.push("question_id_missing");
@@ -749,6 +761,15 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
         const condition = question.showIf;
         const depId = condition.dependsOnQuestionId;
         const depIndex = input.questions.findIndex((q) => q.questionId === depId);
+
+        // B4: a cyclic `showIf` graph is hostile input. Report it explicitly
+        // under `invalid_questionnaire` so the ingest and cache read boundaries
+        // can flag the definition itself, not just the forward-reference symptom.
+        try {
+          checkForCycle(question.questionId, depId, questionMap, new Set());
+        } catch {
+          errors.push(`${INVALID_QUESTIONNAIRE_CODE}:circular_show_if:${question.questionId}`);
+        }
 
         if (depIndex === -1) {
           errors.push(`show_if_dependency_not_found:${question.questionId}:${depId}`);

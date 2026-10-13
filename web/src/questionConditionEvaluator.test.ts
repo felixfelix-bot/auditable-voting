@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { shouldShowQuestion, CircularDependencyError } from "./questionConditionEvaluator";
+import {
+  CircularDependencyError,
+  checkForCycle,
+  evaluateDefinitionVisibility,
+  evaluateQuestionVisibility,
+  shouldShowQuestion,
+} from "./questionConditionEvaluator";
 import type {
+  QuestionnaireDefinition,
   QuestionnaireQuestion,
   QuestionnaireResponseAnswer,
 } from "./questionnaireProtocol";
@@ -49,6 +56,26 @@ function answeredMap(...answers: QuestionnaireResponseAnswer[]): Map<string, Que
     m.set(a.questionId, a);
   }
   return m;
+}
+
+function makeDefinition(questions: QuestionnaireQuestion[]): QuestionnaireDefinition {
+  return {
+    schemaVersion: 1,
+    eventType: "questionnaire_definition",
+    responseMode: "blind_token",
+    questionnaireId: "q_b4_hostile",
+    title: "Hostile definition fixture",
+    description: "Fixture used to drive the fail-closed visibility path.",
+    createdAt: 1712530000,
+    openAt: 1712531000,
+    closeAt: 1712539999,
+    coordinatorPubkey: "npub1coordinator",
+    coordinatorEncryptionPubkey: "npub1coordinatorenc",
+    responseVisibility: "private",
+    eligibilityMode: "open",
+    allowMultipleResponsesPerPubkey: false,
+    questions: questions.map((question) => ({ ...question, showIf: question.showIf ?? null })),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -215,7 +242,7 @@ describe("shouldShowQuestion — answer type mismatch", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 8. Circular dependency detection → error                           */
+/* 8. Hostile definitions fail closed and are REPORTED                */
 /* ------------------------------------------------------------------ */
 
 describe("shouldShowQuestion — fail closed on a hostile definition (B4)", () => {
@@ -246,5 +273,78 @@ describe("shouldShowQuestion — fail closed on a hostile definition (B4)", () =
     const answers = answeredMap(yesNoAnswer("q1", true));
     expect(() => shouldShowQuestion(q1, answers, allQuestions)).not.toThrow();
     expect(shouldShowQuestion(q1, answers, allQuestions)).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 9. The hostile definition is surfaced as invalid_questionnaire     */
+/* ------------------------------------------------------------------ */
+
+describe("hostile definition is reported as invalid_questionnaire (B4)", () => {
+  it("checkForCycle still detects the cycle for definition-time validation", () => {
+    // The coordinator path keeps its explicit rejection: cycle detection is
+    // untouched, it is just no longer reachable from `shouldShowQuestion`.
+    expect(() => checkForCycle("q1", "q1", undefined, new Set())).toThrow(CircularDependencyError);
+    expect(CircularDependencyError.name).toBe("CircularDependencyError");
+  });
+
+  it("evaluateQuestionVisibility reports a self-reference as hidden + invalid_questionnaire", () => {
+    const q = makeYesNoQuestion("q1", {
+      showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const result = evaluateQuestionVisibility(q, answeredMap(), new Map([["q1", q]]));
+    expect(result.visible).toBe(false);
+    expect(result.invalidQuestionnaire).toBe(true);
+    expect(result.errors.join(" ")).toContain("invalid_questionnaire");
+  });
+
+  it("evaluateQuestionVisibility reports a transitive cycle as hidden + invalid_questionnaire", () => {
+    const q1 = makeYesNoQuestion("q1", {
+      showIf: { dependsOnQuestionId: "q2", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const q2 = makeYesNoQuestion("q2", {
+      showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const result = evaluateQuestionVisibility(q1, answeredMap(), new Map([["q1", q1], ["q2", q2]]));
+    expect(result.visible).toBe(false);
+    expect(result.invalidQuestionnaire).toBe(true);
+  });
+
+  it("evaluateQuestionVisibility leaves a clean definition unflagged", () => {
+    const q = makeYesNoQuestion("q2", {
+      showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+    });
+    const result = evaluateQuestionVisibility(q, answeredMap(yesNoAnswer("q1", true)));
+    expect(result.visible).toBe(true);
+    expect(result.invalidQuestionnaire).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("evaluateDefinitionVisibility collects invalid_questionnaire for a hostile definition", () => {
+    const definition = makeDefinition([
+      makeYesNoQuestion("q1", {
+        showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+      }),
+      makeYesNoQuestion("q2"),
+    ]);
+    const result = evaluateDefinitionVisibility(definition, answeredMap());
+    expect(result.invalidQuestionnaire).toBe(true);
+    expect(result.errors.join(" ")).toContain("invalid_questionnaire");
+    // Fail closed: q1 is hidden; the self-reference must not make q2 blow up.
+    expect(result.visibleQuestionIds.has("q1")).toBe(false);
+    expect(result.visibleQuestionIds.has("q2")).toBe(true);
+  });
+
+  it("evaluateDefinitionVisibility leaves a clean definition unflagged", () => {
+    const definition = makeDefinition([
+      makeYesNoQuestion("q1"),
+      makeYesNoQuestion("q2", {
+        showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } },
+      }),
+    ]);
+    const result = evaluateDefinitionVisibility(definition, answeredMap(yesNoAnswer("q1", true)));
+    expect(result.invalidQuestionnaire).toBe(false);
+    expect(result.errors).toEqual([]);
+    expect([...result.visibleQuestionIds].sort()).toEqual(["q1", "q2"]);
   });
 });
