@@ -43,7 +43,13 @@ export function normalizeCoordinatorNpubsRust(values: string[]) {
 }
 
 export function normalizeRelaysRust(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.startsWith("wss://")))];
+  // Mirrors the Rust core (`normalize_trimmed_unique` in
+  // web/rust-core/src/lib.rs): trim, drop empties, de-duplicate. The Rust
+  // implementation does NOT filter by scheme, so the mock must not either —
+  // otherwise the deterministic harness's local `ws://` relay would be silently
+  // dropped in tests. Scheme validation belongs to the URL-level parsers
+  // (`isRelayUrl` in questionnaireRelays.ts), not to this primitive.
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 export function buildActorRelaySetRust(input: {

@@ -31,7 +31,7 @@ export default defineConfig(({ mode }) => ({
   test: {
     // Playwright owns browser specs under web/e2e; Vitest must only discover
     // unit and component tests under src.
-    include: ["src/**/*.test.{ts,tsx}"],
+    include: ["src/**/*.test.{ts,tsx}", "harness/**/*.test.ts"],
     setupFiles: ["./src/test/setup.ts"],
     environment: "node",
     // Heavy protocol/runtime tests (questionnaireOptionA.runtime, BlindDm,

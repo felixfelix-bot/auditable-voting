@@ -4,6 +4,7 @@ import { recordRelayOutcome, rankRelaysByBackoff, selectRelaysWithBackoff } from
 import { getSharedNostrPool } from "./sharedNostrPool";
 import {
   DEFAULT_NOSTR_PUBLIC_RELAYS as SIMPLE_PUBLIC_RELAYS,
+  harnessRelayOverrideActive,
   NOSTR_PUBLIC_MIN_PUBLISH_INTERVAL_MS as SIMPLE_PUBLIC_MIN_PUBLISH_INTERVAL_MS,
   NOSTR_PUBLIC_PUBLISH_MAX_WAIT_MS as SIMPLE_PUBLIC_PUBLISH_MAX_WAIT_MS,
   NOSTR_PUBLIC_PUBLISH_STAGGER_MS as SIMPLE_PUBLIC_PUBLISH_STAGGER_MS,
@@ -96,10 +97,16 @@ type PublicPublishOptions = {
 };
 
 function buildPublicRelays(relays?: string[], includeDefaultRelays = true) {
-  const ranked = rankRelaysByBackoff(normalizeRelaysRust([
-    ...(relays ?? []),
-    ...(includeDefaultRelays ? SIMPLE_PUBLIC_RELAYS : []),
-  ]));
+  const ranked = rankRelaysByBackoff(normalizeRelaysRust(
+    harnessRelayOverrideActive()
+      // Harness: the local relay is the whole relay set for this call, whether or
+      // not the caller opted into default relays. No public relay is targeted.
+      ? [...(relays ?? [])]
+      : [
+        ...(relays ?? []),
+        ...(includeDefaultRelays ? SIMPLE_PUBLIC_RELAYS : []),
+      ],
+  ));
   return selectRelaysWithBackoff(ranked, ranked.length);
 }
 

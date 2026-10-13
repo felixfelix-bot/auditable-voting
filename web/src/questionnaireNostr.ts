@@ -3,7 +3,7 @@ import { publishToRelaysStaggered, queueNostrPublish } from "./nostrPublishQueue
 import { getSharedNostrPool } from "./sharedNostrPool";
 import { recordRelayCloseReasons, recordRelayOutcome, rankRelaysByBackoff, selectRelaysWithBackoff, withRelayOutcomes } from "./relayBackoff";
 import {
-  DEFAULT_NOSTR_PUBLIC_RELAYS as SIMPLE_PUBLIC_RELAYS,
+  makePublicRelayBuilder,
   NOSTR_PUBLIC_MIN_PUBLISH_INTERVAL_MS as SIMPLE_PUBLIC_MIN_PUBLISH_INTERVAL_MS,
   NOSTR_PUBLIC_PUBLISH_MAX_WAIT_MS as SIMPLE_PUBLIC_PUBLISH_MAX_WAIT_MS,
   NOSTR_PUBLIC_PUBLISH_STAGGER_MS as SIMPLE_PUBLIC_PUBLISH_STAGGER_MS,
@@ -70,9 +70,10 @@ export type QuestionnaireAdmissionAnnouncementEvent = {
   questionnaireRelays?: string[];
 };
 
-function buildPublicRelays(relays?: string[]) {
-  return rankRelaysByBackoff(normalizeRelaysRust([...(relays ?? []), ...SIMPLE_PUBLIC_RELAYS]));
-}
+const buildPublicRelays = makePublicRelayBuilder(
+  (...relaySets) => normalizeRelaysRust(relaySets.flatMap((set) => set ?? [])),
+  (relays) => rankRelaysByBackoff(relays),
+);
 
 function selectPublicReadRelays(relays: string[], maxRelays = QUESTIONNAIRE_PUBLIC_READ_RELAYS_MAX) {
   const indexedRelays = relays.filter((relay) => !QUESTIONNAIRE_PUBLIC_READ_UNINDEXED_TAG_RELAYS.has(relay));

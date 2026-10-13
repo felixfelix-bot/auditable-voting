@@ -15,7 +15,7 @@ import {
   queryQuestionnaireEvents,
 } from "./questionnaireNostr";
 import { getSharedNostrPool } from "./sharedNostrPool";
-import { DEFAULT_NOSTR_PUBLIC_RELAYS as SIMPLE_PUBLIC_RELAYS } from "./nostrRelayConfig";
+import { makePublicRelayBuilder } from "./nostrRelayConfig";
 import { normalizeRelaysRust } from "./wasm/auditableVotingCore";
 import type {
   QuestionnaireDefinition,
@@ -91,9 +91,10 @@ export type QuestionnaireWorkerDelegationStatus = {
   updatedAt: number | null;
 };
 
-function buildPublicRelays(relays?: string[]) {
-  return rankRelaysByBackoff(normalizeRelaysRust([...(relays ?? []), ...SIMPLE_PUBLIC_RELAYS]));
-}
+const buildPublicRelays = makePublicRelayBuilder(
+  (...relaySets) => normalizeRelaysRust(relaySets.flatMap((set) => set ?? [])),
+  (relays) => rankRelaysByBackoff(relays),
+);
 
 function selectPublicReadRelays(relays: string[]) {
   return selectRelaysWithBackoff(relays, QUESTIONNAIRE_PUBLIC_READ_RELAYS_MAX);
