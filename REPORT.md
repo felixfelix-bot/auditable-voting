@@ -1,146 +1,218 @@
-# REPORT — t_653ca91b: Consolidate gate report (7 scenarios × theme × language)
+# REPORT — wasm/core dependency + staleness detection for the harness
 
-**Worker:** worker-reviewer-glm (fleet offload)
-**Task:** `auditable-voting:t_653ca91b` — "Consolidate gate report: 7 scenarios x theme x language matrix"
-**Board:** `auditable-voting` (`~/.hermes/kanban/boards/auditable-voting/kanban.db`)
-**Repo / worktree:** `/home/c03rad0r/repos/auditable-voting`
-**Branch:** `feat/windowed-publication-clean`
-**Date (UTC):** 2026-10-13
-**Commit shipped:** `f7da87a` (rebased onto remote tip; pushed to `origin`) — see §7
-
----
-
-## Verdict
-
-> ## ❌ FAIL — the gate stays CLOSED.
-
-**Applied rule (the only rule the task permits):** PASS only if all 7 scenarios pass in BOTH themes (light, dark) AND all 3 languages (EN, FR, TA) — 42 cells — with zero open blocker and zero open major defects. Otherwise FAIL.
-
-**Result:** 42 cells → **0 pass / 42 fail / 0 n/a**. 3 open **blocker** defects, 2 open **major** defects, 1 open minor. A single failed cell is sufficient for FAIL; here none of the 42 cells produced evidence. The verdict is not softened.
+**Task:** Document what the harness needs from `auditable-voting-core`, whether the prebuilt
+wasm under `web/src/wasm/` is sufficient to run the harness end-to-end, and how staleness of
+those prebuilt artifacts would be detected — with exact commands and observed output.
+**Repo:** `auditable-voting` · **Branch:** `feat/windowed-publication-clean`
+**Deliverable:** `docs/harness-wasm-core-dependency.md` (committed)
+**Status:** COMPLETE — all three DO items answered with raw evidence.
 
 ---
 
-## 1. What the task asked for, and what was found
+## 1. What the card asked, and what is actually true
 
-The task instructed the worker to read four inputs before writing anything:
+The card's premise — "`build:wasm:coordinator` references a sibling repo `../auditable-voting-core`
+which is ABSENT on this machine" — is **half right, and the wrong half matters**.
 
-1. `docs/e2e-smoke-checklist.md` — the canonical 7 scenarios
-2. `docs/evidence/theme-sweep.md` — output of the theme sweep task
-3. `docs/evidence/i18n-sweep.md` — output of the language sweep task
-4. the defect lists reported by "tasks 1–3" (scenario implementation work)
+- The directory `/home/c03rad0r/repos/auditable-voting-core` genuinely does not exist.
+- But the core source is **vendored inside this repository** at
+  `auditable-voting/auditable-voting-core/`: **20 git-tracked files**, no `.gitmodules`, only
+  `target/` ignored. The npm script does `cd ../auditable-voting-core` **from `web/`**, so it
+  resolves to the vendored copy.
+- Therefore there is **no sibling-repo dependency to fix**. A fresh worker with this repo and the
+  Rust toolchain can build the wasm from tracked source.
 
-**None of the four exists.** Verified four independent ways:
+The genuine fragilities found instead are: (a) the script is **cwd-sensitive** (fails with exit 2
+if the vendored tree is gone/elsewhere), (b) `wasm-pack` is **not on PATH** on this machine
+(exit 127 — the real failure here), (c) `npm ci` is **broken** by lockfile drift, and
+(d) the artifact **guard cannot tell a fresh artifact from a corrupt or stale one**.
 
-| Check | Command | Result |
-|---|---|---|
-| On disk | `ls docs/` / `ls docs/evidence/` | no checklist file; `docs/evidence/` dir absent |
-| On any git ref | `git log --all -- <path>`; `git rev-list --all \| while read s; do git ls-tree -r --name-only $s; done` | never committed on any reachable commit |
-| On the filesystem | `find /home/c03rad0r /tmp -iname '*theme-sweep*' -o -iname '*i18n-sweep*' -o -iname '*e2e-smoke-checklist*'` | no results |
-| Referenced by code | `grep -rn 'e2e-smoke-checklist\|smoke-run-notes' --include='*.md' --include='*.ts' --include='*.html' .` | 0 hits |
+## 2. DO item 1 — what the harness needs from `auditable-voting-core`
 
-Also absent: the "plan of record" cited by several cards, `~/.hermes/plans/2026-08-19_auditable-voting-issue12-parallel-features.md`.
+Two independent Rust→wasm crates, both required by the web harness:
 
-The board was then searched for the sweep outputs and defect lists. Board `auditable-voting` holds 147 cards; **no** task title/id on any related board (`auditable-voting`, `auditable-voting-tests`, `dryrun-t625b0ed4`) matches "sweep"; **no** comment or event on the board contains a defect, severity or blocker entry; `task_attachments` is **empty**. There is no sweep result to consolidate and no defect list to merge.
-
-## 2. The canonical 7 scenarios were recovered from the board
-
-Because `docs/e2e-smoke-checklist.md` is absent, the seven scenarios were recovered **verbatim** from card `t_af37c6c9` ("P2-T3: E2E smoke test"), which enumerates them:
-
-1. Create questionnaire with EN+FR+TA prompts and conditional questions
-2. Upload CSV, send OTPs
-3. Voter enters OTP, receives credential, votes in FR
-4. Generate paper ballot for a voter
-5. Enter paper ballot manually on another browser
-6. Coordinator publishes results
-7. Auditor verifies results
-   … "Test both light and dark themes. Test all 3 languages. Gate: all scenarios pass."
-
-`docs/e2e-smoke-checklist.md` has been **(re)created** in this pass, clearly labelled **RECONSTRUCTED — NOT AN ORIGINAL INPUT**, with each scenario marked FAIL and an evidence link (none), satisfying task step 3. This is a substitute for a missing input, not evidence of execution.
-
-## 3. The gate was never run
-
-- Card `t_af37c6c9` (the gate's parent) is in status **`todo`** — never executed.
-- Its scenario children (`t_4144193d`, `t_2c39431f`, `t_b522b190`, `t_96670f7f`, `t_0827ec54`, `t_fe7e8e8d`, `t_b308c2db`, `t_9d78c787`, `t_ecbbe7e3`, `t_da32eefe`, `t_11b653b0`, `t_268796c6`, `t_2e0f6f3f`) sit in `ready`/`todo`.
-- The environment-provisioning card `t_7cb15b4a` is **`blocked`**.
-- Zero screenshots/logs exist for any of the 42 cells.
-
-The only committed browser coverage is four partial Playwright specs in `web/e2e/` (`theme-toggle.spec.ts`, `resident-otp-admission.spec.ts`, `delivery-smoke.spec.ts`, `github-pages-video.spec.ts`). None is attributed to a scenario/theme/language cell; none covers dark-theme scenario flows (the only theme video is light-theme); the sole locale-aware spec asserts the `<html lang>` attribute, not rendered UI in each language. They cannot be cited as passing cells without fabricated attribution.
-
-## 4. Deliverables
-
-| # | Deliverable | Path | Status |
-|---|---|---|---|
-| (a)+(b)+(c)+(d) | Consolidated gate report — 42-cell matrix, per-scenario index, deduplicated severity-tagged defect list, explicit verdict | `docs/gate-report.md` | written, committed, pushed |
-| step 3 | Checklist re-opened, every scenario marked pass/fail with evidence link | `docs/e2e-smoke-checklist.md` | written (reconstructed + labelled), committed, pushed |
-| evidence | Theme × non-EN report captures | `docs/evidence/gate-report-light-fr.png`, `docs/evidence/gate-report-dark-fr.png` | written, committed, pushed |
-| supporting | Evidence page source for the captures | `docs/evidence/gate-report-evidence.html` | written, committed, pushed |
-| — | Progress log | `PROGRESS.md` | written, committed, pushed |
-
-### 4.1 The 42-cell matrix (summary)
-
-| Scenario | light/EN | light/FR | light/TA | dark/EN | dark/FR | dark/TA |
-|---|---|---|---|---|---|---|
-| S1 questionnaire creation | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S2 CSV + OTP send | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S3 OTP → credential → FR vote | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S4 paper ballot generation | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S5 manual paper-ballot entry | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S6 publish results | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-| S7 auditor verification | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL |
-
-**Total: 42 cells — 0 pass, 42 FAIL, 0 n/a.** Per-cell detail with (empty) evidence slots: `docs/gate-report.md` §4.
-
-### 4.2 Deduplicated defect list (by root cause)
-
-| ID | Root cause | Severity | Repro | Cells / locations |
+| Crate | Source | npm script | Output | Features |
 |---|---|---|---|---|
-| D1 | Canonical scenario checklist file missing from repo | **blocker** | `ls docs/e2e-smoke-checklist.md` → not found; `git log --all -- docs/e2e-smoke-checklist.md` → empty | all 42 cells |
-| D2 | Sweep evidence files missing (`docs/evidence/` absent) | **blocker** | `ls docs/evidence/theme-sweep.md docs/evidence/i18n-sweep.md` → not found | all 42 cells |
-| D3 | E2E scenarios never executed (no artefacts) | **blocker** | board: `t_af37c6c9` is `todo`, `t_7cb15b4a` is `blocked`, no defect/evidence comments | all 42 cells |
-| D4 | No dark-theme coverage for the scenario flows | **major** (unproven — no dark run to fail) | only theme video is light-theme; `theme-toggle.spec.ts` is mechanism-only | 21 `*-D-*` cells |
-| D5 | No multi-language rendering coverage | **major** (unproven) | sole locale check asserts `<html lang>` attribute only | 28 `*-FR`/`*-TA` cells |
-| D6 | E2E specs not run in CI (`.github/workflows/test.yml` is vitest-only) | **minor** | inspect `test.yml`; matches card `t_2123cc81` | infrastructure, all cells |
+| `auditable-voting-rust-core` | `web/rust-core/` | `build:wasm:legacy` | `web/src/wasm/auditable_voting_core/pkg/` | — |
+| `auditable-voting-core` | `auditable-voting-core/` (vendored) | `build:wasm:coordinator` | `web/src/wasm/auditable_voting_coordinator_core/pkg/` | `openmls-engine` |
 
-Deduplicated by root cause: the three missing/mis-executed-evidence symptoms collapse into three distinct root causes (missing definition file / missing generated artefacts / work not run), each with a distinct fix; D4–D6 are carried-forward risks observed in-repo.
+`build:wasm` = both, sequentially. Crate 2's `openmls-engine` feature pulls `openmls 0.8.1`,
+`openmls_basic_credential 0.5.0`, `openmls_memory_keystore 0.2.0`, `openmls_rust_crypto 0.5.1`,
+`openmls_traits 0.5.0`, `base64 0.22`, `getrandom 0.2.17`; `wasm-opt = false` so binaryen is not
+needed. `crate-type = ["cdylib","rlib"]`.
 
-## 5. Evidence attachments — and their honest scope
+Six artifacts are name-checked by `web/scripts/ensure-wasm-artifacts.mjs`:
+`auditable_voting_rust_core{,_bg}.js` + `_bg.wasm`, and `auditable_voting_core{,_bg}.js` +
+`_bg.wasm`. Consumers: `web/src/wasm/auditableVotingCore.ts:23` (legacy core) and
+`web/src/core/wasmLoader.ts:5` (coordinator core, dyn-imported, reached from
+`core/coordinatorCoreAdapter.ts` and `core/derivedStateAdapter.ts`).
 
-Two PNG captures are attached: `docs/evidence/gate-report-light-fr.png` and `docs/evidence/gate-report-dark-fr.png`. Rendered from `docs/evidence/gate-report-evidence.html` with `<html lang="fr">`, in light and dark themes respectively (backgrounds verified programmatically: light = RGB(255,255,255); dark = RGB(15,17,21)).
+### Is prebuilt wasm sufficient to run the harness end-to-end? — **YES** (with one important caveat)
 
-**Scope limitation, stated plainly:** these screenshots are evidence of the *reporting surface* rendered in both themes with a non-EN language active. They are **NOT** evidence that the application under test was exercised in a non-EN language — no such application evidence exists (defect D3). They are supplied to satisfy the card's literal attachment requirement without overclaiming; this distinction is repeated in `docs/gate-report.md` §7.
+Observed:
 
-## 6. Acceptance criteria — compliance
+- `node scripts/ensure-wasm-artifacts.mjs` → **no output, exit 0** (no build spawned; `wasm-pack`
+  deliberately absent from PATH).
+- `npx vitest run src/services/CoordinatorControlService.test.ts` → **5 passed (5)** in 5.11s.
+  That is the test that mounts the **real coordinator wasm** through `coordinatorCoreAdapter.ts`.
+- `npm test` full harness → **523 passed / 49 failed (572)**, 225s. All 49 failures are in three
+  files and **none is wasm-related**: `questionnaireOptionA.runtime.test.ts` (47, windowed
+  publication / delegated proxy), `simpleLocalState.test.ts` (2, WebCrypto
+  `Pbkdf2Params` salt TypeError), `QuestionnaireCoordinatorPanel.optionA.test.tsx` (1, option_a
+  worker config). Reported here only so these are not mistaken for wasm failures.
 
-| Criterion | Status |
-|---|---|
-| (a) full 42-cell matrix, per-cell pass/fail + evidence link | DELIVERED (all 42 cells present; each FAIL, evidence empty because none exists) |
-| (b) per-scenario evidence link | DELIVERED (index present; all links empty) |
-| (c) deduplicated severity-tagged defect list | DELIVERED (D1–D6) |
-| (d) explicit PASS/FAIL verdict with justification | DELIVERED — **FAIL** (§0) |
-| Evidence attached: report + ≥1 screenshot per theme, non-EN active | DELIVERED, with the scope limitation in §5 |
-| Verdict not softened | HONOURED — 42/42 unevidenced, 3 blockers open → FAIL |
+**Caveat — the mock shortcut does not cover the coordinator core.** `web/vite.config.ts:16-29`
+aliases `./wasm/auditableVotingCore` → `auditableVotingCore.mock.ts`, but **only in `mode ===
+"test"` and only for the legacy core module name**. The coordinator core is loaded dynamically by
+`wasmLoader.ts` and is **not** mocked, so a broken coordinator artifact is a hard failure
+(`WebAssembly.compile(): BufferSource argument is empty`), not a silent mock pass. That is the
+sharp edge.
 
-## 7. Commit / push log (observed, not claimed)
+**Second caveat — "prebuilt" here means machine-local, not committed.** `web/src/wasm/*/pkg/` is
+ignored **twice** (root `.gitignore:42,43` plus a wasm-pack-generated `*` `.gitignore` in each
+`pkg/`). `git ls-files 'web/src/wasm/*pkg*'` → **0**. A fresh clone has no `pkg/` at all. So
+"artifacts present" is an untracked local cache; the correct reading is "given artifacts produced
+by an equivalent build, no rebuild is needed".
+
+## 3. DO item 2 — staleness detection
+
+**Current mechanism:** `ensure-wasm-artifacts.mjs` is an **mtime-only** heuristic. It requires the
+six files to exist and `latestArtifactMtimeMs >= latestRustInputMtimeMs`, else it runs
+`npm run build:wasm`; `FORCE_WASM_BUILD=1` forces a build. Source roots watched:
+`web/rust-core/{Cargo.toml,src}` and `../auditable-voting-core/{Cargo.toml,src}`.
+
+**Reproduced gaps:**
+
+- **A — content-blind.** Zero out the coordinator wasm, force its mtime to 2027: guard → **exit 0**
+  (no rebuild). The harness then fails with
+  `Error: Failed to parse WASM file: WebAssembly.compile(): BufferSource argument is empty`
+  at `coordinatorCoreAdapter.ts:96` — **5/5 tests fail**. The guard passes while the harness is
+  guaranteed to fail, and the only signal is a hard-to-attribute runtime error.
+- **B — source-drift-blind.** It recurses only `src/` and `Cargo.toml`, so changes to
+  `Cargo.lock`, `.cargo/config.toml`, `[profile]`/`[package.metadata.wasm-pack]`, or the build
+  environment do not move `latestRustInputMtimeMs`. [INFERENCE from reading the two source-root
+  tuples.]
+- **C — missing source reads as "fresh".** `mv auditable-voting-core /tmp/hidden` with artifacts
+  still present → guard **exit 0**, because an absent path contributes `0` to the max. The "cannot
+  rebuild" case is silently converted into a pass.
+- **D — mtime unstable across git ops.** [INFERENCE] checkout/clone/rebase set mtimes to checkout
+  time. Supporting observation: a fresh clone with copied-in artifacts rebuilt **both** crates
+  unconditionally because the artifact mtimes predated the checkout mtimes.
+- **E — no provenance at all.** Nothing records which source revision an artifact corresponds to.
+
+**Options considered:** (0) current mtime heuristic; (1) committed checksum manifest;
+(2) `git log` of the managed core source; (3) build-script guard only; (4) commit the artifacts;
+(5) mtime + `git log` hybrid. Option 4 puts 3 MB of binary in git, fights two ignore files, and
+*still* leaves staleness ambiguous — rejected as primary. Option 2 alone says nothing about
+content. Option 3 is already effectively enforced (missing core → exit 2; missing wasm-pack →
+exit 127) but cannot prevent gap C.
+
+**Recommendation (Option 1): committed checksum + source-fingerprint manifest.**
+
+1. Commit `web/src/wasm/wasm-artifacts.lock.json` with: per-artifact `sha256` + `bytes`; a
+   `sourceFingerprint` = `git rev-parse HEAD:<tree>` for `auditable-voting-core/src`,
+   `auditable-voting-core/Cargo.toml`, `web/rust-core/src`, `web/rust-core/Cargo.toml`; and the
+   build `toolchain` (wasm-pack / rustc / target).
+2. Add `web/scripts/verify-wasm-artifacts.mjs` that fails with an actionable message on missing
+   artifact, hash mismatch, byte-length mismatch, or source-fingerprint drift ("run
+   `npm run build:wasm`"), and **warns** (not fails) on toolchain-version skew.
+3. Wire it into the existing `predev`/`prebuild`/`pretest*` hooks (verify → rebuild if needed →
+   re-verify) and expose `npm run verify:wasm-artifacts`. Keep mtime as a fast pre-filter; make the
+   manifest the authority.
+4. Regenerate the manifest in a `postbuild:wasm` step so it cannot drift from its artifacts.
+
+**Why this is sound here — the build is byte-reproducible.** A fresh clone + `wasm-pack 0.13.1`
+rebuilt the coordinator core in **2m48s** and the result was **byte-identical** to the artifact on
+disk:
 
 ```
-repo            /home/c03rad0r/repos/auditable-voting
-branch          feat/windowed-publication-clean
-commit          f7da87a  docs(gate): consolidated E2E gate report — FAIL verdict (42/42 cells unevidenced)
-rebase          rebased onto origin/feat/windowed-publication-clean tip (3f9892a) — clean, no conflicts
-push            git push origin HEAD:feat/windowed-publication-clean
-                -> 3f9892a..f7da87a  HEAD -> feat/windowed-publication-clean   (push_rc=0)
-remote == local  f7da87a  (verified: local rev-parse == origin/feat/windowed-publication-clean rev-parse)
-remote ref holds PROGRESS.md, docs/gate-report.md, docs/e2e-smoke-checklist.md, docs/evidence/*  (verified via git ls-tree -r)
+a8dea6b9ce57e541ea603ac7a7f0decafb440e594e367dd88e6533784f09b6df  (2660339 bytes)   ×2
 ```
 
-Note: the fleet pre-commit hook's markdown-table heuristic false-positived on ordinary table cells (commit SHAs `a3c15ff7…`, file paths, task ids). A regex + long-token scan confirmed **zero** real secrets in the staged files; the commit used the hook's own documented per-invocation override for doc-heavy trees (`HERMES_LEGACY_PATTERN_SCAN=off`), which leaves the fail-closed literal credential gate (GATE 1) active. No secret was bypassed.
+Hashes observed for seeding the manifest:
 
-## 8. What would have to change for a PASS
+```
+auditable_voting_rust_core_bg.wasm        bc81831e1263f1ad5fbc3423530233e8f524441cbb285b840d359247ce593ed3   336967 B
+auditable_voting_core_bg.wasm             a8dea6b9ce57e541ea603ac7a7f0decafb440e594e367dd88e6533784f09b6df  2660339 B
+git rev-parse HEAD:auditable-voting-core/src   e628074598da219ec1f0740e28003f443befbee4
+git rev-parse HEAD:web/rust-core/src           0b579bcc51586fb1ea0e4d8bc398b6124f2af6ae
+git log -1 -- auditable-voting-core/src web/rust-core/src   da5b9aa 2026-07-15
+```
 
-1. A committed `docs/e2e-smoke-checklist.md` defining S1–S7 with exact steps (resolves D1).
-2. A provisioning run producing the seeded fixture, recorded in `docs/e2e-smoke-run-notes.md` (unblocks `t_7cb15b4a`).
-3. All 42 cells executed with a committed per-cell artefact under `docs/evidence/` — dark theme visibly active for the D cells, non-EN language visibly active for the FR/TA cells (resolves D3, and D2 by producing the sweep outputs).
-4. A dark-theme run of S1–S7 (D4) and a rendered-UI multi-language run of S1–S7 (D5).
-5. The Playwright specs wired into CI (D6).
+**[SPECULATION, flagged]** sha256 is only a useful invariant if the build reproduces *for the
+toolchain in use*. It did here (rustc 1.94.0 + wasm-pack 0.13.1); CI pins neither, so CI's hash
+will likely differ. Hence the design keys the "must rebuild" decision on the **source
+fingerprint** and uses artifact hashes only for corruption, treating toolchain mismatch as a
+warning.
 
-Only when all 42 cells pass **and** D1–D5 are closed may the gate be re-evaluated for PASS.
+## 4. Evidence: the two recorded build failures
+
+**Card's stated scenario — core directory missing** (fails *before* wasm-pack is invoked):
+
+```
+$ sh -c 'cd ../auditable-voting-core && wasm-pack build --target bundler --out-dir ../web/src/wasm/auditable_voting_coordinator_core/pkg -- --features openmls-engine'
+sh: 1: cd: can't cd to ../auditable-voting-core
+EXIT=2
+```
+
+**The failure that actually occurs on this machine:**
+
+```
+$ cd web && npm run build:wasm:coordinator
+> cd ../auditable-voting-core && wasm-pack build --target bundler --out-dir ../web/src/wasm/auditable_voting_coordinator_core/pkg -- --features openmls-engine
+sh: 1: wasm-pack: not found
+EXIT=127
+```
+
+## 5. Fresh-worker blockers (found, reported, NOT fixed — out of scope)
+
+1. **`npm ci` fails; lockfile out of sync.** `npm ci` → `npm error Missing: esbuild@0.27.7 from
+   lock file`, exit 1. `web/package-lock.json` carries `@esbuild/*` platform packages at
+   **0.27.5** and `"esbuild": "~0.27.0"`/`"^0.27.0"` *declarations*, but **no parent
+   `node_modules/esbuild` at 0.27.x** (only a root esbuild at 0.21.5 for vite). `npm install
+   --no-audit --no-fund` works (`added 266 packages in 29s`). CI `test.yml` uses `npm ci`, so CI
+   would stop here. **Recommend filing as its own defect; lockfile regeneration is a repo-wide
+   change and was deliberately not done by this documentation card.**
+2. **`wasm-pack` off PATH.** `which wasm-pack` → not found; `~/.cargo/bin/wasm-pack` → `0.13.1`.
+   `web/package.json` lists `wasm-pack` as a devDependency but `node_modules/.bin/wasm-pack` does
+   not exist after install. Fix: `export PATH="$HOME/.cargo/bin:$PATH"`.
+
+## 6. CI buildability
+
+- `test.yml` is correct: `dtolnay/rust-toolchain@stable` (target `wasm32-unknown-unknown`) +
+  `cargo install wasm-pack --locked`, then `npm ci && npm test`. Consistent with artifacts not
+  being committed. [Not executed here] Would currently stop at `npm ci` (blocker 1).
+- `static.yml` (Pages deploy) has **zero** Rust/wasm matches, yet runs `npm run build`, whose
+  `prebuild` hook is **unconditional** and needs `wasm-pack` on a fresh checkout. Observed
+  supporting behaviour: a fresh clone's `npm run prebuild` launched a full wasm build (exceeded a
+  300 s timeout) rather than no-opping. **[SPECULATION]** either the deploy job is silently broken
+  on a clean runner, or something outside `static.yml` supplies artifacts — nothing in that file
+  does. Recommended fix: add the same Rust + wasm-pack steps to the `build` job.
+
+## 7. Deliverables and commit trail (all observed)
+
+- `docs/harness-wasm-core-dependency.md` — new, 33.7 KB, full write-up with raw output, evidence
+  index, and copy-paste commands.
+- `PROGRESS.md` — crash-recovery map.
+- Commits pushed to **fork** `felixfelix-bot/auditable-voting`, branch
+  `feat/windowed-publication-clean` (additive only):
+  - `10fbba1` — progress map → push `56c907d..10fbba1`
+  - `699d64c` — the documentation → push `10fbba1..699d64c`
+  - final — `REPORT.md` + `PROGRESS.md`
+
+No upstream (`tidley`) push was made. Nothing was fixed in application code.
+
+## 8. Answers to the card, in one line each
+
+- **Required from the core:** the `auditable-voting-core` crate built with `wasm-pack
+  --target bundler --features openmls-engine` into
+  `web/src/wasm/auditable_voting_coordinator_core/pkg/` (plus the separate `web/rust-core` crate);
+  six named artifact files consumed by `auditableVotingCore.ts` and `wasmLoader.ts`.
+- **Is prebuilt wasm sufficient end-to-end?** **Yes** — guard no-ops, `wasm-pack` not needed,
+  coordinator wasm test 5/5 pass, full suite has zero wasm failures. Caveat: the artifacts are
+  untracked, and the coordinator core is not mocked in tests, so a corrupt artifact fails hard.
+- **Staleness detection:** current mechanism is mtime-only and is content-blind, source-drift-blind,
+  and treats absent source as fresh (all reproduced). **Recommended:** committed checksum +
+  source-fingerprint manifest (`web/src/wasm/wasm-artifacts.lock.json`) verified by
+  `scripts/verify-wasm-artifacts.mjs`, with the byte-reproducible build (`a8dea6b9…`) making the
+  hashes stable.
