@@ -46,5 +46,12 @@ Format: finding -> status -> files touched.
 
 ---
 
-## Commit / push log
-- (pending) initial commit of the above; push to `origin` (`felixfelix-bot/auditable-voting`, branch already tracks it).
+## Commit / push log (observed)
+- **commit `786fa39`** — initial commit of the deliverables (blocked once by the fleet pre-commit hook's markdown-table false positive on SHAs/paths/task-ids; regex + long-token scan confirmed zero real secrets; retried with the hook's documented `HERMES_LEGACY_PATTERN_SCAN=off` for doc-heavy trees, which leaves GATE 1 (literal credential gate) active).
+- **rebase** — branch was 8 behind `origin`; rebased onto `origin/feat/windowed-publication-clean` tip `3f9892a` (clean, no conflicts). New SHA: **`f7da87a`**.
+- **push** — `git push origin HEAD:feat/windowed-publication-clean` → `3f9892a..f7da87a` (rc=0).
+- **verified** — `local rev-parse == origin/feat/windowed-publication-clean rev-parse == f7da87a`; remote tree contains `PROGRESS.md`, `docs/gate-report.md`, `docs/e2e-smoke-checklist.md`, `docs/evidence/*`.
+- **REPORT.md** — full worker report written; committed + pushed in the follow-up commit.
+
+## Status: COMPLETE
+All task steps executed. Verdict: **FAIL** (0/42 cells pass; blockers D1–D3, majors D4–D5 open). No remaining steps.
