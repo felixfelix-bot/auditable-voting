@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Rapport de porte E2E — auditable-voting — preuve (FR)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body.light { --bg:#ffffff; --fg:#1a1a1a; --muted:#5a5a5a; --card:#f4f6f8; --border:#d8dde3; --fail:#b3261e; --pass:#1a7f37; --accent:#0b5394; }
+  body.dark  { --bg:#0f1115; --fg:#e8eaed; --muted:#a7adb5; --card:#1b1f27; --border:#2c333d; --fail:#ff6b6b; --pass:#4ade80; --accent:#8ab4f8; }
+  html,body { margin:0; padding:0; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,"Noto Sans","Noto Sans Tamil",sans-serif; }
+  .wrap { max-width:880px; margin:0 auto; padding:28px 24px 40px; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:26px 0 8px; border-bottom:1px solid var(--border); padding-bottom:6px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 18px; }
+  .badge { display:inline-block; font-weight:700; padding:6px 14px; border-radius:6px; margin:10px 0 4px; font-size:16px; }
+  .badge.fail { background:color-mix(in srgb, var(--fail) 18%, transparent); color:var(--fail); border:1px solid var(--fail); }
+  .meta { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 16px; font-size:13.5px; }
+  .meta div { margin:3px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin-top:6px; }
+  th,td { border:1px solid var(--border); padding:6px 8px; text-align:center; }
+  th { background:var(--card); font-weight:600; }
+  td.s { text-align:left; }
+  .F { color:var(--fail); font-weight:700; }
+  .totals { font-size:13.5px; margin-top:8px; }
+  .langbar { font-size:12.5px; color:var(--muted); margin-top:20px; }
+  code { background:var(--card); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-size:12.5px; }
+  .note { color:var(--muted); font-size:12.5px; margin-top:14px; border-left:3px solid var(--accent); padding:6px 12px; }
+</style>
+</head>
+<body class="DARKORLIGHT">
+<div class="wrap">
+  <h1>Rapport de porte E2E — auditable-voting</h1>
+  <p class="sub">Consolidation de la porte : 7 scénarios × {clair, sombre} × {EN, FR, TA} = 42 cellules — <span lang="fr">langue active : français (fr)</span></p>
+
+  <div class="badge fail">VERDICT : ÉCHEC (FAIL)</div>
+
+  <div class="meta">
+    <div><strong>Tâche :</strong> <code>auditable-voting:t_653ca91b</code> — Consolidate gate report</div>
+    <div><strong>Dépôt / HEAD :</strong> <code>a3c15ff</code> (branche <code>feat/windowed-publication-clean</code>)</div>
+    <div><strong>Thème actif :</strong> DARKORLIGHTNAME &nbsp;|&nbsp; <strong>Langue de la page :</strong> <code>&lt;html lang="fr"&gt;</code></div>
+    <div><strong>Date :</strong> 2026-10-13 (UTC)</div>
+  </div>
+
+  <h2>Matrice maître — 42 cellules (0 réussite / 42 échec)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th rowspan="2">Scénario</th>
+        <th colspan="3">Clair (light)</th>
+        <th colspan="3">Sombre (dark)</th>
+      </tr>
+      <tr><th>EN</th><th>FR</th><th>TA</th><th>EN</th><th>FR</th><th>TA</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="s">S1 — Questionnaire EN+FR+TA + questions conditionnelles</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S2 — Import CSV, envoi des OTP</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S3 — OTP → justificatif → vote en FR</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S4 — Génération du bulletin papier</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S5 — Saisie manuelle du bulletin papier</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S6 — Publication des résultats par le coordinateur</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+      <tr><td class="s">S7 — Vérification indépendante par l'auditeur</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td><td class="F">Échec</td></tr>
+    </tbody>
+  </table>
+  <p class="totals"><strong>Total :</strong> 42 cellules — <span class="F">0 réussite</span>, 42 échec, 0 « sans objet ». Les entrées requises (<code>docs/e2e-smoke-checklist.md</code>, <code>docs/evidence/theme-sweep.md</code>, <code>docs/evidence/i18n-sweep.md</code>) sont absentes : aucune cellule n'a pu être exécutée.</p>
+
+  <h2>Défauts dédupliqués (bloquants ouverts)</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Cause racine</th><th>Gravité</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td class="s">Fichier de référence des scénarios absent du dépôt</td><td class="F">bloquant</td></tr>
+      <tr><td>D2</td><td class="s">Fichiers de preuve des balayages thème/i18n absents (pas de dossier <code>docs/evidence/</code>)</td><td class="F">bloquant</td></tr>
+      <tr><td>D3</td><td class="s">Scénarios E2E jamais exécutés (aucune preuve produite)</td><td class="F">bloquant</td></tr>
+      <tr><td>D4</td><td class="s">Aucune couverture du thème sombre pour les parcours</td><td>majeur</td></tr>
+      <tr><td>D5</td><td class="s">Aucune couverture de rendu multilingue (EN/FR/TA)</td><td>majeur</td></tr>
+      <tr><td>D6</td><td class="s">Les tests E2E ne s'exécutent pas en CI</td><td>mineur</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note">Rapport complet : <code>docs/gate-report.md</code>. Les liens de preuve par cellule sont vides dans le rapport car aucune capture d'exécution n'existe — la porte reste fermée.</p>
+  <p class="langbar">Cette page est rendue avec la langue française active et le thème DARKORLIGHTNAME — capture du <em>plan de restitution du rapport</em>, et non une preuve d'exécution de l'application testée.</p>
+</div>
+</body>
+</html>
