@@ -8,7 +8,11 @@ import {
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireDefinition,
   type QuestionnaireDefinitionReference,
+  type QuestionnaireResponseAnswer,
+  validateQuestionnaireDefinition,
+  validateQuestionnaireResponsePayload,
 } from "./questionnaireProtocol";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 import { verifyGeneralInvitePow, type GeneralInvitePowProof } from "./questionnaireGeneralInvitePow";
 import type { QuestionnaireBlindPrivateKey, QuestionnaireBlindPublicKey } from "./questionnaireBlindSignature";
 import type { QuestionnaireFlowMode, QuestionnaireResponseMode } from "./questionnaireProtocolConstants";
@@ -762,15 +766,17 @@ function answeredQuestionsMatchCredentialScopes(
     }
     return true;
   }
-  const proofScopeKeys = new Set(
-    submissionCredentialBundle(submission).map((proof) => ballotScopeBaseKey(proof.ballotScope)),
-  );
   for (const answer of submission.payload.responses) {
     const questionIndex = definition.questions.findIndex((question) => question.questionId === answer.questionId);
     if (questionIndex < 0) {
       return false;
     }
-    if (!proofScopeKeys.has(questionBallotScopeKey(definition.questions[questionIndex], questionIndex))) {
+    const question = definition.questions[questionIndex];
+    const requiredScope = questionRequiredScope(question);
+    if (!submissionCredentialBundle(submission).some(proof => (
+      ballotScopeBaseKey(proof.ballotScope) === questionBallotScopeKey(question, questionIndex)
+      && (!requiredScope || normaliseQuestionnaireAllowedScopes(proof.ballotScope?.allowedScopes, proof.ballotScope?.ballotGroup).includes(requiredScope))
+    ))) {
       return false;
     }
   }
@@ -792,9 +798,10 @@ function reduceVoterError(
 }
 
 function validateResponsesSchema(responses: QuestionnaireAnswer[]) {
+  if (!Array.isArray(responses)) return false;
   const seen = new Set<string>();
   for (const answer of responses) {
-    if (!answer.questionId.trim() || seen.has(answer.questionId)) {
+    if (!answer || typeof answer.questionId !== "string" || !answer.questionId.trim() || seen.has(answer.questionId)) {
       return false;
     }
     seen.add(answer.questionId);
@@ -802,12 +809,12 @@ function validateResponsesSchema(responses: QuestionnaireAnswer[]) {
       return false;
     }
     if (answer.type === "multiple_choice") {
-      if (!Array.isArray(answer.answer) || answer.answer.length === 0 || answer.answer.some((option) => !option.trim())) {
+      if (!Array.isArray(answer.answer) || answer.answer.length === 0 || answer.answer.some((option) => typeof option !== "string" || !option.trim())) {
         return false;
       }
     }
     if (answer.type === "rank") {
-      if (!Array.isArray(answer.answer) || answer.answer.length === 0 || answer.answer.some((option) => !option.trim())) {
+      if (!Array.isArray(answer.answer) || answer.answer.length === 0 || answer.answer.some((option) => typeof option !== "string" || !option.trim())) {
         return false;
       }
       if (new Set(answer.answer).size !== answer.answer.length) {
@@ -817,8 +824,18 @@ function validateResponsesSchema(responses: QuestionnaireAnswer[]) {
     if (answer.type === "text" && typeof answer.answer !== "string") {
       return false;
     }
+    if (!["yes_no", "multiple_choice", "rank", "text"].includes(answer.type)) return false;
   }
   return true;
+}
+
+export function optionAAnswerToResponse(answer: QuestionnaireAnswer): QuestionnaireResponseAnswer {
+  switch (answer.type) {
+    case "yes_no": return { questionId: answer.questionId, answerType: "yes_no", value: answer.answer === "yes" };
+    case "multiple_choice": return { questionId: answer.questionId, answerType: "multiple_choice", selectedOptionIds: answer.answer };
+    case "rank": return { questionId: answer.questionId, answerType: "rank", rankedOptionIds: answer.answer };
+    case "text": return { questionId: answer.questionId, answerType: "free_text", text: answer.answer };
+  }
 }
 
 export function createEmptyVoterElectionLocalState(input: {
@@ -1646,8 +1663,39 @@ export function validateBallotSubmission(input: {
   if (!validateResponsesSchema(input.submission.payload.responses)) {
     return false;
   }
+  if (input.definition && validateQuestionnaireDefinition(input.definition).errors.some(error => error.startsWith("show_if_"))) return false;
   const answered = new Set(input.submission.payload.responses.map((entry) => entry.questionId));
-  if (!input.requiredQuestionIds.every((questionId) => answered.has(questionId))) {
+  const questionMap = new Map(input.definition?.questions.map(question => [question.questionId, question]));
+  const answerMap = new Map(input.submission.payload.responses.map(entry => [entry.questionId, optionAAnswerToResponse(entry)]));
+  const visible = (questionId: string) => {
+    const question = questionMap.get(questionId);
+    return !question || shouldShowQuestion(question, answerMap, questionMap);
+  };
+  if (input.definition && [...answered].some(id => !questionMap.has(id) || !visible(id))) return false;
+  if (input.definition) {
+    const result = validateQuestionnaireResponsePayload({
+      definition: input.definition,
+      payload: {
+        schemaVersion: 1,
+        kind: "questionnaire_response_payload",
+        questionnaireId: input.electionId,
+        responseId: "validation",
+        submittedAt: 0,
+        answers: [...answerMap.values()],
+      },
+    });
+    // Requiredness below is limited to the questions covered by this submission.
+    if (result.errors.some(error => !error.startsWith("missing_required_answer:"))) return false;
+  }
+  for (const question of input.definition?.questions ?? []) {
+    if (!question.showIf || !question.required || !visible(question.questionId) || answered.has(question.questionId)) continue;
+    const covered = answeredQuestionsMatchCredentialScopes(input.definition, {
+      ...input.submission,
+      payload: { ...input.submission.payload, responses: [{ questionId: question.questionId, type: "yes_no", answer: "yes" }] },
+    });
+    if (covered) return false;
+  }
+  if (!input.requiredQuestionIds.every((questionId) => !visible(questionId) || answered.has(questionId))) {
     return false;
   }
   if (Array.isArray(input.submission.credentialBundle) && input.submission.credentialBundle.length > 0) {
