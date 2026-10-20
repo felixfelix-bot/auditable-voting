@@ -1316,7 +1316,173 @@ fn submission_answers_authorized_for_proofs(
             return false;
         }
     }
-    true
+    submission_conditions_valid(definition, submission)
+}
+
+fn submission_conditions_valid(
+    definition: &serde_json::Value,
+    submission: &QuestionnaireBlindResponseEvent,
+) -> bool {
+    let Some(questions) = definition.get("questions").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let mut visible = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut answers = HashMap::new();
+    for answer in &submission.answers {
+        let Some(id) = answer.get("questionId").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        if answers.insert(id, answer).is_some() {
+            return false;
+        }
+        let Some(question) = questions.iter().find(|q| q.get("questionId").and_then(|v| v.as_str()) == Some(id)) else {
+            return false;
+        };
+        if answer.get("answerType") != question.get("type") {
+            return false;
+        }
+        match answer.get("answerType").and_then(|v| v.as_str()) {
+            Some("yes_no") if answer.get("value").and_then(|v| v.as_bool()).is_some() => {}
+            Some("multiple_choice" | "rank") => {
+                let ranked = answer["answerType"] == "rank";
+                let field = if ranked { "rankedOptionIds" } else { "selectedOptionIds" };
+                let Some(ids) = answer.get(field).and_then(|v| v.as_array()) else { return false; };
+                let options = question.get("options").and_then(|v| v.as_array());
+                if !ids.iter().all(|id| id.as_str().is_some() && options.is_some_and(|options| options.iter().any(|option| option.get("optionId") == Some(id)))) {
+                    return false;
+                }
+                if ranked {
+                    let minimum = question.get("minimumRanked").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let unique: HashSet<_> = ids.iter().filter_map(|v| v.as_str()).collect();
+                    if ids.len() < minimum || unique.len() != ids.len() { return false; }
+                } else if question.get("multiSelect").and_then(|v| v.as_bool()) != Some(true) && ids.len() != 1 {
+                    return false;
+                }
+            }
+            Some("free_text") => {
+                let Some(text) = answer.get("text").and_then(|v| v.as_str()) else { return false; };
+                // The worker cannot check plaintext length for coordinator-encrypted text.
+                // JavaScript string lengths count UTF-16 code units.
+                if !text.trim().starts_with("enc:nip44v2:")
+                    && question.get("maxLength").and_then(|v| v.as_u64()).is_some_and(|max| text.encode_utf16().count() as u64 > max)
+                { return false; }
+            }
+            _ => return false,
+        }
+    }
+    let proofs = blind_response_proofs(submission);
+    for (index, question) in questions.iter().enumerate() {
+        let Some(id) = question.get("questionId").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let condition = question.get("showIf").filter(|v| !v.is_null());
+        let is_visible = if let Some(condition) = condition {
+            let Some(dep) = condition
+                .get("dependsOnQuestionId")
+                .and_then(|v| v.as_str())
+            else {
+                return false;
+            };
+            // Definitions only permit references to earlier questions.
+            if !seen.contains(dep) {
+                return false;
+            }
+            let Some(required) = condition.get("requiredAnswer") else {
+                return false;
+            };
+            let dep_question = questions
+                .iter()
+                .find(|q| q.get("questionId").and_then(|v| v.as_str()) == Some(dep))
+                .unwrap();
+            let required_type = required.get("answerType").and_then(|v| v.as_str());
+            if required_type != dep_question.get("type").and_then(|v| v.as_str()) {
+                return false;
+            }
+            let matches = match required_type {
+                Some("yes_no") => {
+                    let Some(value) = required.get("value").and_then(|v| v.as_bool()) else {
+                        return false;
+                    };
+                    answers.get(dep).is_some_and(|answer| {
+                        answer.get("value").and_then(|v| v.as_bool()) == Some(value)
+                    })
+                }
+                Some("multiple_choice") => {
+                    let Some(ids) = required.get("selectedOptionIds").and_then(|v| v.as_array())
+                    else {
+                        return false;
+                    };
+                    let options = dep_question.get("options").and_then(|v| v.as_array());
+                    if ids.is_empty()
+                        || !ids.iter().all(|id| {
+                            id.as_str().is_some()
+                                && options.is_some_and(|options| {
+                                    options
+                                        .iter()
+                                        .any(|option| option.get("optionId") == Some(id))
+                                })
+                        })
+                    {
+                        return false;
+                    }
+                    answers
+                        .get(dep)
+                        .and_then(|answer| answer.get("selectedOptionIds"))
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|selected| ids.iter().all(|id| selected.contains(id)))
+                }
+                _ => return false,
+            };
+            visible.contains(dep) && matches
+        } else {
+            true
+        };
+        seen.insert(id);
+        if is_visible {
+            visible.insert(id);
+        }
+        if answers.contains_key(id) && !is_visible {
+            return false;
+        }
+        let covered = proofs.iter().any(|proof| {
+            let scope = proof.ballot_scope.as_ref();
+            let allowed = scope_allowed_scopes(&proof.ballot_scope);
+            let required_scope = question.get("requiredScope").and_then(|v| v.as_str());
+            if !allowed_scopes_allow_question(&allowed, required_scope) {
+                return false;
+            }
+            if definition
+                .get("ballotCredentialMode")
+                .and_then(|v| v.as_str())
+                != Some("per_question")
+            {
+                return true;
+            }
+            let Some(scope) = scope else {
+                return false;
+            };
+            let slot = question.get("ballotSlot");
+            let slot_index = slot
+                .and_then(|s| s.get("slotIndex"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(index as u64 + 1);
+            let version = slot
+                .and_then(|s| s.get("version"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
+            get_scope_positive_integer(scope, "slotIndex", "slot_index") == Some(slot_index)
+                && get_scope_positive_integer(scope, "version", "version").unwrap_or(1) == version
+        });
+        if covered
+            && is_visible
+            && question.get("required").and_then(|v| v.as_bool()) == Some(true)
+            && !answers.contains_key(id)
+        {
+            return false;
+        }
+    }
+    answers.keys().all(|id| seen.contains(id))
 }
 
 fn blind_response_token_commitments(submission: &QuestionnaireBlindResponseEvent) -> Vec<String> {
@@ -4478,9 +4644,7 @@ impl WorkerRuntime {
     ) -> Result<()> {
         let publication = {
             let state = self.state.lock().await;
-            state
-                .elections
-                .get(election_id)
+            state.elections.get(election_id)
                 .and_then(|election| election.private_submission_publications.get(submission_id))
                 .cloned()
                 .context("private batch publication disappeared before completion")?
@@ -4520,7 +4684,9 @@ impl WorkerRuntime {
     ) -> Result<Event> {
         let existing = {
             let state = self.state.lock().await;
-            state.elections.get(election_id)
+            state
+                .elections
+                .get(election_id)
                 .and_then(|election| election.private_submission_publications.get(submission_id))
                 .and_then(|publication| publication.prepared_event_json.clone())
         };
@@ -6366,7 +6532,7 @@ mod tests {
             answers: vec![json!({
                 "questionId": "q1",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             })],
         }
     }
@@ -8758,6 +8924,38 @@ mod tests {
                 .expect("configured definition")["openAt"] = json!(1);
         }
 
+        // Both private queueing and public acceptance must enforce conditions.
+        {
+            let mut state = runtime.state.lock().await;
+            state.elections.get_mut(questionnaire_id).unwrap().definition.as_mut().unwrap()["questions"]
+                .as_array_mut().unwrap().push(json!({
+                    "questionId":"q2", "type":"yes_no", "required":true,
+                    "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}
+                }));
+        }
+        let missing_child = runtime
+            .handle_private_ballot_submission(private.clone())
+            .await
+            .unwrap();
+        assert!(
+            !missing_child.accepted,
+            "a visible required child cannot be omitted"
+        );
+        let mut private = private;
+        private.submission.payload.responses[0]["answer"] = json!("no");
+        let mut hidden_answer = private.clone();
+        hidden_answer
+            .submission
+            .payload
+            .responses
+            .push(json!({"questionId":"q2", "type":"yes_no", "answer":"yes"}));
+        assert!(
+            !runtime
+                .handle_private_ballot_submission(hidden_answer)
+                .await
+                .unwrap()
+                .accepted
+        );
         let receipt = runtime
             .handle_private_ballot_submission(private.clone())
             .await
@@ -8897,7 +9095,7 @@ mod tests {
         wrong_group.answers = vec![json!({
             "questionId": "q_a",
             "answerType": "yes_no",
-            "answer": "yes"
+            "value": true
         })];
         assert!(runtime
             .handle_submission(wrong_group)
@@ -8923,12 +9121,12 @@ mod tests {
             json!({
                 "questionId": "q1",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             }),
             json!({
                 "questionId": "q_a",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             }),
         ];
         assert!(runtime
@@ -8944,6 +9142,197 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[tokio::test]
+    async fn public_acceptance_enforces_conditional_requiredness() {
+        let id = "public_conditions";
+        let (mut definition, keypair) = test_definition_and_keypair(id);
+        definition["questions"].as_array_mut().unwrap().push(json!({
+            "questionId":"q2", "type":"yes_no", "required":true,
+            "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}
+        }));
+        let mut state = WorkerPersistentState::default();
+        state.elections.insert(
+            id.into(),
+            ElectionRuntimeState {
+                election_id: id.into(),
+                definition: Some(definition),
+                ..ElectionRuntimeState::default()
+            },
+        );
+        let (runtime, state_dir) = test_runtime_with_state(&Keys::generate(), state);
+        for (index, answers, accepted) in [
+            (
+                0,
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":true})],
+                false,
+            ),
+            (
+                1,
+                vec![
+                    json!({"questionId":"q1", "answerType":"yes_no", "value":false}),
+                    json!({"questionId":"q2", "answerType":"yes_no", "value":true}),
+                ],
+                false,
+            ),
+            (
+                2,
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":false})],
+                true,
+            ),
+            (
+                3,
+                vec![
+                    json!({"questionId":"q1", "answerType":"yes_no", "value":true}),
+                    json!({"questionId":"q2", "answerType":"yes_no", "value":false}),
+                ],
+                true,
+            ),
+        ] {
+            let response_id = format!("response_{index}");
+            let mut submission = signed_submission(
+                &keypair,
+                id,
+                &response_id,
+                &format!("t{index}"),
+                &format!("n{index}"),
+            );
+            submission.answers = answers;
+            runtime.handle_submission(submission).await.unwrap();
+            let state = runtime.state.lock().await;
+            assert_eq!(
+                state.elections[id]
+                    .accepted_nullifiers
+                    .contains(&format!("n{index}")),
+                accepted
+            );
+        }
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn conditional_submission_validation() {
+        let (mut definition, keypair) = test_definition_and_keypair("conditions");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"yes_no", "required":true},
+            {"questionId":"q2", "type":"yes_no", "required":true,
+             "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}},
+            {"questionId":"q3", "type":"yes_no", "required":true,
+             "showIf":{"dependsOnQuestionId":"q2", "requiredAnswer":{"answerType":"yes_no", "value":true}}}
+        ]);
+        let election = ElectionRuntimeState {
+            definition: Some(definition.clone()),
+            ..ElectionRuntimeState::default()
+        };
+        let mut submission = signed_submission(&keypair, "conditions", "r", "t", "n");
+        let yes =
+            |id: &str, value: bool| json!({"questionId":id, "answerType":"yes_no", "value":value});
+        submission.answers = vec![yes("q1", false)];
+        assert!(submission_answers_authorized_for_proofs(
+            &election,
+            &submission
+        ));
+        submission.answers = vec![yes("q1", true)];
+        assert!(
+            !submission_answers_authorized_for_proofs(&election, &submission),
+            "visible child is required"
+        );
+        submission.answers = vec![yes("q1", false), yes("q2", true), yes("q3", true)];
+        assert!(
+            !submission_answers_authorized_for_proofs(&election, &submission),
+            "hidden answers must be rejected"
+        );
+        submission.answers = vec![yes("q1", true), yes("q2", true), yes("q3", false)];
+        assert!(submission_answers_authorized_for_proofs(
+            &election,
+            &submission
+        ));
+        for malformed in [json!(null), json!("true"), json!(1)] {
+            submission.answers =
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":malformed})];
+            assert!(!submission_answers_authorized_for_proofs(
+                &election,
+                &submission
+            ));
+        }
+        for malformed in [
+            json!(null),
+            json!({}),
+            json!({"answerType":"yes_no", "value":"true"}),
+        ] {
+            let mut bad = election.clone();
+            bad.definition.as_mut().unwrap()["questions"][1]["showIf"]["requiredAnswer"] =
+                malformed;
+            submission.answers = vec![yes("q1", false)];
+            assert!(!submission_answers_authorized_for_proofs(&bad, &submission));
+        }
+        submission.answers = vec![json!({"questionId":"q1", "answerType":"multiple_choice", "value":true, "selectedOptionIds":[]}), yes("q2", true), yes("q3", true)];
+        assert!(!submission_answers_authorized_for_proofs(&election, &submission), "the dependency answer type must match its question");
+    }
+
+    #[test]
+    fn conditional_validation_applies_free_text_limit_only_to_plaintext() {
+        let (mut definition, keypair) = test_definition_and_keypair("free_text_limit");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"free_text", "required":true, "maxLength":2}
+        ]);
+        let election = ElectionRuntimeState {
+            definition: Some(definition),
+            ..ElectionRuntimeState::default()
+        };
+        let mut submission = signed_submission(&keypair, "free_text_limit", "r", "t", "n");
+        for (text, accepted) in [
+            ("ok", true),
+            ("too long", false),
+            ("😀", true),
+            ("😀a", false),
+            ("enc:nip44v2:ciphertext", true),
+            ("  enc:nip44v2:ciphertext  ", true),
+        ] {
+            submission.answers = vec![json!({
+                "questionId":"q1", "answerType":"free_text", "text":text
+            })];
+            assert_eq!(
+                submission_answers_authorized_for_proofs(&election, &submission),
+                accepted,
+                "unexpected validation result for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_multiple_choice_and_malformed_answers() {
+        let (mut definition, keypair) = test_definition_and_keypair("multiple_conditions");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"multiple_choice", "required":true, "multiSelect":true, "options":[{"optionId":"a"}, {"optionId":"b"}, {"optionId":"c"}]},
+            {"questionId":"q2", "type":"yes_no", "required":true, "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"multiple_choice", "selectedOptionIds":["a", "b"]}}}
+        ]);
+        let mut election = ElectionRuntimeState { definition: Some(definition), ..ElectionRuntimeState::default() };
+        let mut submission = signed_submission(&keypair, "multiple_conditions", "r", "t", "n");
+        let selected = |ids: serde_json::Value| json!({"questionId":"q1", "answerType":"multiple_choice", "selectedOptionIds":ids});
+        submission.answers = vec![selected(json!(["a"]))];
+        assert!(submission_answers_authorized_for_proofs(&election, &submission));
+        submission.answers = vec![selected(json!(["a", "b", "c"]))];
+        assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+        submission.answers.push(json!({"questionId":"q2", "answerType":"yes_no", "value":true}));
+        assert!(submission_answers_authorized_for_proofs(&election, &submission));
+        for malformed in [json!(null), json!("a"), json!({}), json!([1])] {
+            submission.answers = vec![selected(malformed.clone())];
+            assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+            let mut bad = election.clone();
+            bad.definition.as_mut().unwrap()["questions"][1]["showIf"]["requiredAnswer"]["selectedOptionIds"] = malformed;
+            submission.answers = vec![selected(json!(["a"]))];
+            assert!(!submission_answers_authorized_for_proofs(&bad, &submission));
+        }
+        for (question_type, answer) in [
+            ("free_text", json!({"questionId":"q1", "answerType":"free_text"})),
+            ("rank", json!({"questionId":"q1", "answerType":"rank", "rankedOptionIds":null})),
+        ] {
+            election.definition.as_mut().unwrap()["questions"] = json!([{"questionId":"q1", "type":question_type, "required":true}]);
+            submission.answers = vec![answer];
+            assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+        }
     }
 
     #[test]

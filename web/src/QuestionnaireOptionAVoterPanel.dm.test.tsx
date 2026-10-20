@@ -186,6 +186,8 @@ import QuestionnaireOptionAVoterPanel, {
   formatVoteActionButtonText,
 } from "./QuestionnaireOptionAVoterPanel";
 import { QuestionnaireOptionAVoterRuntime } from "./questionnaireOptionARuntime";
+import { createEmptyVoterElectionLocalState } from "./questionnaireOptionA";
+import type { QuestionnaireDefinition } from "./questionnaireProtocol";
 import { storeCachedQuestionnaireDefinition } from "./questionnaireDefinitionCache";
 import { fetchQuestionnaireDefinitions, fetchQuestionnairePrivateInviteStatus } from "./questionnaireTransport";
 import { fetchOptionAInviteDms } from "./questionnaireOptionAInviteDm";
@@ -1702,6 +1704,64 @@ describe("QuestionnaireOptionAVoterPanel DM retrieval", () => {
       expect(requestSpy).toHaveBeenCalledTimes(1);
     });
     expect(coordinatorAtRequest).toEqual(["npub1" + "b".repeat(58)]);
+  });
+
+  it("skips hidden conditional questions and ignores stale hidden ancestor answers in the active flow", async () => {
+    const user = userEvent.setup();
+    const draftSpy = vi.spyOn(QuestionnaireOptionAVoterRuntime.prototype, "updateDraftResponses").mockImplementation(() => undefined);
+    vi.spyOn(QuestionnaireOptionAVoterRuntime.prototype, "publishProvisionalResponses").mockResolvedValue({ successes: 1 } as never);
+    const submitSpy = vi.spyOn(QuestionnaireOptionAVoterRuntime.prototype, "submitVote").mockResolvedValue({} as never);
+    const definition: QuestionnaireDefinition = {
+      schemaVersion: 1, eventType: "questionnaire_definition", responseMode: "blind_token",
+      questionnaireId: "q_conditions", title: "Conditions", createdAt: 1, openAt: 1, closeAt: 999,
+      coordinatorPubkey: "npub1" + "b".repeat(58), coordinatorEncryptionPubkey: "npub1" + "b".repeat(58),
+      responseVisibility: "private", eligibilityMode: "open", allowMultipleResponsesPerPubkey: false,
+      ballotCredentialMode: "per_question",
+      questions: [
+        { questionId: "q1", type: "yes_no", prompt: "Root question", required: true },
+        { questionId: "q2", type: "yes_no", prompt: "Child question", required: true, showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } } },
+        { questionId: "q3", type: "yes_no", prompt: "Grandchild question", required: true, showIf: { dependsOnQuestionId: "q2", requiredAnswer: { answerType: "yes_no", value: true } } },
+        { questionId: "q4", type: "yes_no", prompt: "Final question", required: true },
+      ],
+    };
+    definition.questions = definition.questions.map(question => ({ ...question, ballotSlot: { slotId: "shared", slotIndex: 1, version: 1 } }));
+    storeCachedQuestionnaireDefinition(definition);
+    const voterNpub = "npub1" + "g".repeat(58);
+    const issuance = { type: "blind_ballot_response", schemaVersion: 1, electionId: "q_conditions", requestId: "request_conditions", issuanceId: "issuance_conditions", invitedNpub: voterNpub, blindSignature: "sig", definition, ballotScope: { slotId: "shared", slotIndex: 1, version: 1 }, issuedAt: "2026-06-15T23:00:00.000Z" };
+    optionAStorageMocks.loadVoterState.mockReturnValue({
+      ...createEmptyVoterElectionLocalState({ electionId: "q_conditions", invitedNpub: voterNpub, coordinatorNpub: definition.coordinatorPubkey, now: "2026-06-15T23:00:00.000Z" }),
+      loginVerified: true, credentialReady: true, blindRequestSent: true, blindIssuance: issuance,
+      blindIssuances: { "slot:1:v1": issuance },
+    });
+    render(<QuestionnaireOptionAVoterPanel announcedQuestionnaireIds={["q_conditions"]} localVoterNpub={voterNpub} />);
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByText("Root question");
+    expect(screen.getByText("Question 1 of 2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Yes" }));
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("Child question");
+    await user.click(screen.getByRole("button", { name: "Yes" }));
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("Grandchild question");
+    await user.click(screen.getByRole("button", { name: /Previous/ }));
+    await user.click(screen.getByRole("button", { name: /Previous/ }));
+    await user.click(screen.getByRole("button", { name: "No" }));
+    expect(screen.getByText("Question 1 of 2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("Final question");
+    expect(screen.queryByText("Child question")).toBeNull();
+    expect(screen.queryByText("Grandchild question")).toBeNull();
+    expect(draftSpy).toHaveBeenLastCalledWith([{ questionId: "q1", type: "yes_no", answer: "no" }]);
+    await user.click(screen.getByRole("button", { name: "No" }));
+    const submit = screen.getByRole("button", { name: /Submit/ }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    await user.click(submit);
+    await waitFor(() => expect(submitSpy).toHaveBeenCalled());
+    expect(submitSpy.mock.calls[0][0]).toEqual(["q1", "q4"]);
+    expect(draftSpy).toHaveBeenLastCalledWith([
+      { questionId: "q1", type: "yes_no", answer: "no" },
+      { questionId: "q4", type: "yes_no", answer: "no" },
+    ]);
   });
 
   it("renders questions from cached questionnaire definition when relay fetch is empty", async () => {

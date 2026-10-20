@@ -603,6 +603,7 @@
           <section class="section" aria-labelledby="limits">
         <p class="section-kicker">Current status</p>
         <h2 id="limits">Current limitations</h2>
+        <p>Conditional follow-up questions use an earlier yes/no or multiple-choice answer from the same submitted ballot. All options specified by a multiple-choice condition must be selected. Voters skip hidden questions and omit their saved answers from submissions. A hidden ancestor cannot reveal a later question through a stale answer. Only visible questions can require an answer. Browser checks and public/private worker checks reject hidden answers and missing visible required answers within the submitted credential coverage. Malformed condition values and answer selections fail validation.</p>
         <p class="section-intro">This is experimental software. The design is intended to be auditable, but it should not be treated as production election infrastructure without independent protocol and implementation review.</p>
         <ul class="limitation-list">
           <li>Active worker configuration is delivered only in an organiser-authenticated private DM and includes the questionnaire definition. Each configuration has a monotonically increasing version scoped to its election delegation; workers persist the latest accepted version and reject duplicate or delayed updates. Workers do not subscribe to public delegation or definition history; their remaining public reads are limited to anonymous submissions for configured questionnaires.</li>

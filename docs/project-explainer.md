@@ -108,6 +108,8 @@ Questionnaires can mix yes/no, multiple-choice, ranked-choice, and free-text que
 
 ## Current limitations
 
+Conditional follow-up questions use an earlier yes/no or multiple-choice answer from the same submitted ballot. For multiple-choice conditions, all specified options must be selected. Voters skip hidden questions, and submissions omit their saved answers. A hidden ancestor cannot reveal a later question through a stale answer. Only visible questions can require an answer. Browser checks and public/private worker checks reject hidden answers and missing visible required answers within the submitted credential coverage. Malformed condition values and answer selections fail validation.
+
 This is experimental software.
 
 Known weak points:

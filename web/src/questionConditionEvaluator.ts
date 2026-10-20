@@ -19,6 +19,8 @@ import type {
   QuestionnaireResponseAnswer,
 } from "./questionnaireProtocol";
 
+type ConditionalQuestion = Pick<QuestionnaireQuestion, "questionId" | "showIf">;
+
 /**
  * Thrown when a question's `showIf` chain contains a cycle (e.g. a question
  * that depends on itself, directly or transitively).
@@ -42,9 +44,9 @@ export class CircularDependencyError extends Error {
  * @throws  {CircularDependencyError} If a circular dependency is detected.
  */
 export function shouldShowQuestion(
-  question: QuestionnaireQuestion,
+  question: ConditionalQuestion,
   answeredQuestions: Map<string, QuestionnaireResponseAnswer>,
-  allQuestions?: Map<string, QuestionnaireQuestion>,
+  allQuestions?: Map<string, ConditionalQuestion>,
 ): boolean {
   const condition = question.showIf;
   if (condition === undefined || condition === null) {
@@ -55,6 +57,14 @@ export function shouldShowQuestion(
   // have the full question map) transitively, throw.
   const visited = new Set<string>();
   checkForCycle(question.questionId, condition.dependsOnQuestionId, allQuestions, visited);
+
+  // Hidden dependency answers are stale and cannot reveal descendants.
+  if (allQuestions) {
+    const dependency = allQuestions.get(condition.dependsOnQuestionId);
+    if (!dependency || !shouldShowQuestion(dependency, answeredQuestions, allQuestions)) {
+      return false;
+    }
+  }
 
   const depAnswer = answeredQuestions.get(condition.dependsOnQuestionId);
   if (depAnswer === undefined) {
@@ -79,7 +89,7 @@ export function shouldShowQuestion(
 function checkForCycle(
   originalId: string,
   dependsOnId: string,
-  allQuestions: Map<string, QuestionnaireQuestion> | undefined,
+  allQuestions: Map<string, ConditionalQuestion> | undefined,
   visited: Set<string>,
 ): void {
   // Direct self-reference.
@@ -103,9 +113,7 @@ function checkForCycle(
       );
     }
     if (visited.has(currentId)) {
-      // Already traversed this node from a different branch — not a cycle
-      // involving originalId, so stop.
-      break;
+      throw new CircularDependencyError(`Circular dependency detected: question "${originalId}" depends on a showIf cycle.`);
     }
     visited.add(currentId);
 
@@ -128,11 +136,15 @@ function evaluateCondition(
   required: QuestionnaireResponseAnswer | { answerType: "yes_no"; value: boolean } | { answerType: "multiple_choice"; selectedOptionIds: string[] },
   actual: QuestionnaireResponseAnswer,
 ): boolean {
+  if (!required || !actual) return false;
   if (required.answerType === "yes_no" && actual.answerType === "yes_no") {
-    return required.value === actual.value;
+    return typeof required.value === "boolean" && typeof actual.value === "boolean" && required.value === actual.value;
   }
 
   if (required.answerType === "multiple_choice" && actual.answerType === "multiple_choice") {
+    if (!Array.isArray(required.selectedOptionIds) || required.selectedOptionIds.length === 0
+      || !required.selectedOptionIds.every(id => typeof id === "string")
+      || !Array.isArray(actual.selectedOptionIds) || !actual.selectedOptionIds.every(id => typeof id === "string")) return false;
     const requiredSet = new Set(required.selectedOptionIds);
     // Every required option must be present in the actual selection.
     for (const reqId of requiredSet) {

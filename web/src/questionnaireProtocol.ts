@@ -691,9 +691,11 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
           errors.push(`show_if_forward_reference:${question.questionId}:${depId}`);
         } else {
           const depQuestion = input.questions[depIndex];
-          const requiredAnswerType = condition.requiredAnswer.answerType;
-          if (requiredAnswerType !== depQuestion.type) {
+          const requiredAnswerType = condition.requiredAnswer?.answerType;
+          if ((requiredAnswerType !== "yes_no" && requiredAnswerType !== "multiple_choice") || requiredAnswerType !== depQuestion.type) {
             errors.push(`show_if_answer_type_mismatch:${question.questionId}:${depId}`);
+          } else if (requiredAnswerType === "yes_no" && typeof condition.requiredAnswer.value !== "boolean") {
+            errors.push(`show_if_invalid_value:${question.questionId}:${depId}`);
           } else if (requiredAnswerType === "multiple_choice") {
             const depOptions = depQuestion.type === "multiple_choice" ? depQuestion.options : [];
             const validOptionIds = new Set(depOptions.map((opt) => opt.optionId));
@@ -742,6 +744,8 @@ export function validateQuestionnaireResponsePayload(input: {
 }): ValidationResult {
   const errors: string[] = [];
   const { definition, payload } = input;
+  const conditionErrors = validateQuestionnaireDefinition(definition).errors.filter(error => error.startsWith("show_if_"));
+  if (conditionErrors.length > 0) return { valid: false, errors: conditionErrors };
   if (payload.questionnaireId !== definition.questionnaireId) {
     errors.push("questionnaire_id_mismatch");
   }
@@ -774,7 +778,7 @@ export function validateQuestionnaireResponsePayload(input: {
     }
 
     if (question.type === "yes_no") {
-      if (answer.answerType !== "yes_no") {
+      if (answer.answerType !== "yes_no" || typeof answer.value !== "boolean") {
         errors.push(`invalid_answer_type:${answer.questionId}`);
       }
       continue;
@@ -786,6 +790,9 @@ export function validateQuestionnaireResponsePayload(input: {
         continue;
       }
       const selected = Array.isArray(answer.selectedOptionIds) ? answer.selectedOptionIds : [];
+      if (!Array.isArray(answer.selectedOptionIds) || !selected.every(id => typeof id === "string")) {
+        errors.push(`invalid_selection:${answer.questionId}`);
+      }
       if (!question.multiSelect && selected.length !== 1) {
         errors.push(`invalid_selection_count:${answer.questionId}`);
       }
@@ -804,6 +811,9 @@ export function validateQuestionnaireResponsePayload(input: {
         continue;
       }
       const ranked = Array.isArray(answer.rankedOptionIds) ? answer.rankedOptionIds : [];
+      if (!Array.isArray(answer.rankedOptionIds)) {
+        errors.push(`invalid_selection:${answer.questionId}`);
+      }
       const minimumRanked = clampRankMinimum(question);
       if (ranked.length < minimumRanked) {
         errors.push(`rank_selection_count:${answer.questionId}`);
@@ -830,7 +840,9 @@ export function validateQuestionnaireResponsePayload(input: {
       errors.push(`invalid_answer_type:${answer.questionId}`);
       continue;
     }
-    if (answer.text.length > question.maxLength) {
+    if (typeof answer.text !== "string") {
+      errors.push(`invalid_answer_type:${answer.questionId}`);
+    } else if (answer.text.length > question.maxLength) {
       errors.push(`free_text_too_long:${answer.questionId}`);
     }
   }

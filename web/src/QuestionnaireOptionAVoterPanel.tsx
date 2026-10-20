@@ -13,6 +13,8 @@ import {
   OptionARuntimeError,
 } from "./questionnaireOptionARuntime";
 import type { BallotScope, BallotSubmission, ElectionInviteMessage, QuestionnaireAnswer, VoterElectionLocalState } from "./questionnaireOptionA";
+import { optionAAnswerToResponse } from "./questionnaireOptionA";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { deriveIdentityWords } from "./identityWords";
 import {
@@ -304,6 +306,7 @@ function mapDefinitionQuestions(definition: QuestionnaireDefinition) {
   return definition.questions.map((question) => ({
     questionId: question.questionId,
     required: question.required,
+    showIf: question.showIf,
     prompt: question.prompt,
     requiredScope: questionRequiredScope(question),
     ballotGroup: normaliseQuestionnaireBallotGroup(question.ballotGroup),
@@ -818,9 +821,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const [questionnaireTitle, setQuestionnaireTitle] = useState<string>("Questionnaire");
   const [questionnaireDescription, setQuestionnaireDescription] = useState<string>("");
   const [questionnaireDefinition, setQuestionnaireDefinition] = useState<QuestionnaireDefinition | null>(null);
-  const [questions, setQuestions] = useState<Array<{
+  const [allQuestions, setQuestions] = useState<Array<{
     questionId: string;
     required: boolean;
+    showIf?: QuestionnaireDefinition["questions"][number]["showIf"];
     prompt: string;
     requiredScope?: string | null;
     ballotGroup?: string | null;
@@ -963,6 +967,23 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     () => Array.from({ length: credentialCount }, (_, index) => index + 1),
     [credentialCount],
   );
+  const visibleQuestionIdsByCredential = useMemo(() => {
+    const questionMap = new Map(allQuestions.map(question => [question.questionId, question]));
+    return new Map(credentialIndexes.map(credentialIndex => {
+      const responses = allQuestions.flatMap(question => {
+        const key = showProxyBallotsTogether ? proxyAnswerKey(question.questionId, credentialIndex) : question.questionId;
+        const response = answerToOptionA(question, answers[key], false);
+        return response ? [optionAAnswerToResponse(response)] : [];
+      });
+      const answerMap = new Map(responses.map(response => [response.questionId, response]));
+      return [credentialIndex, new Set(allQuestions.filter(question => shouldShowQuestion(question, answerMap, questionMap)).map(question => question.questionId))];
+    }));
+  }, [allQuestions, answers, credentialIndexes, showProxyBallotsTogether]);
+  const questions = useMemo(() => allQuestions.filter(question => (
+    showProxyBallotsTogether
+      ? credentialIndexes.some(index => visibleQuestionIdsByCredential.get(index)?.has(question.questionId))
+      : visibleQuestionIdsByCredential.get(activeCredentialIndex)?.has(question.questionId)
+  )), [allQuestions, showProxyBallotsTogether, credentialIndexes, visibleQuestionIdsByCredential, activeCredentialIndex]);
 
   useEffect(() => {
     if (
@@ -2440,6 +2461,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   function buildDraftResponsesForCredential(credentialIndex = activeCredentialIndex, questionIds?: string[]) {
     const targetQuestionIds = questionIds && questionIds.length > 0 ? new Set(questionIds) : null;
     return questions
+      .filter((question) => visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId))
       .filter((question) => !targetQuestionIds || targetQuestionIds.has(question.questionId))
       .map((question) => {
         const key = answerKeyForQuestion(question.questionId, credentialIndex);
@@ -3681,6 +3703,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   });
 
   const questionHasResponseForCredential = (question: (typeof questions)[number], credentialIndex = activeCredentialIndex) => {
+    if (!visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)) return true;
     const value = answers[answerKeyForQuestion(question.questionId, credentialIndex)];
     if (Array.isArray(value)) {
       if (question.type === "rank") {
@@ -4790,7 +4813,9 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
                             </span>
                           )}
                         </div>
-                        {renderQuestionControls(question, credentialIndex, ballotSubmitted)}
+                        {visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)
+                          ? renderQuestionControls(question, credentialIndex, ballotSubmitted)
+                          : <p className='simple-voter-note'>This question does not apply to this ballot.</p>}
                       </section>
                     );
                   })}
