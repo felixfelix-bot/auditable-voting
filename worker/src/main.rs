@@ -974,6 +974,30 @@ fn apply_worker_election_config(
     if let Some(codes) = &snapshot.bearer_invite_codes {
         merge_bearer_invite_codes(election, codes);
     }
+    if let Some(admissions) = &snapshot.paper_ballot_admissions {
+        let configured_admissions = admissions
+            .iter()
+            .filter(|entry| entry.election_id == snapshot.election_id)
+            .map(|entry| (entry.registry_key.trim().to_lowercase(), entry.clone()))
+            .filter(|(registry_key, entry)| {
+                registry_key.len() == 64
+                    && registry_key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && entry.state != "revoked"
+            })
+            .collect::<HashMap<_, _>>();
+        election.paper_ballot_admissions = configured_admissions
+            .into_iter()
+            .map(|(registry_key, entry)| {
+                let entry = election
+                    .paper_ballot_admissions
+                    .get(&registry_key)
+                    .filter(|local| local.state == "redeemed")
+                    .cloned()
+                    .unwrap_or(entry);
+                (registry_key, entry)
+            })
+            .collect();
+    }
     let blind_key_material_changed = blind_signing_key_material_changed(
         election.blind_signing_private_key.as_ref(),
         snapshot.blind_signing_private_key.as_ref(),
@@ -1104,6 +1128,10 @@ fn verify_general_invite_pow(definition: &serde_json::Value, request: &BlindBall
             .invite_code_hash
             .as_deref()
             .is_some_and(|hash| !hash.trim().is_empty())
+        || request
+            .paper_ballot_admission_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
     {
         return true;
     }
@@ -1765,6 +1793,7 @@ fn has_effective_eligibility_config(election: &ElectionRuntimeState) -> bool {
         || election.eligibility_required
         || !election.whitelist_npubs.is_empty()
         || !election.bearer_invite_codes.is_empty()
+        || !election.paper_ballot_admissions.is_empty()
 }
 
 fn deferred_blind_request_ready_for_retry(
@@ -1776,6 +1805,10 @@ fn deferred_blind_request_ready_for_retry(
             .invite_code_hash
             .as_ref()
             .is_some_and(|code_hash| election.bearer_invite_codes.contains_key(code_hash))
+        || request
+            .paper_ballot_admission_key
+            .as_ref()
+            .is_some_and(|code_hash| election.paper_ballot_admissions.contains_key(&code_hash.trim().to_lowercase()))
 }
 
 fn definition_uses_per_question_credentials(definition: &serde_json::Value) -> bool {
@@ -1783,6 +1816,17 @@ fn definition_uses_per_question_credentials(definition: &serde_json::Value) -> b
         .get("ballotCredentialMode")
         .and_then(|entry| entry.as_str())
         == Some("per_question")
+}
+
+fn definition_is_open(definition: &serde_json::Value) -> bool {
+    let now = Utc::now().timestamp();
+    let Some(open_at) = definition.get("openAt").and_then(|value| value.as_i64()) else {
+        return false;
+    };
+    let Some(close_at) = definition.get("closeAt").and_then(|value| value.as_i64()) else {
+        return false;
+    };
+    open_at <= now && now < close_at
 }
 
 fn election_needs_legacy_control_replay(election: &ElectionRuntimeState) -> bool {
@@ -1817,7 +1861,18 @@ fn election_has_public_submission_capability(election: &ElectionRuntimeState) ->
 }
 
 fn known_expected_invitee_count(election: &ElectionRuntimeState) -> Option<u64> {
+    // Paper redemptions join the whitelist, but the configured count can lag
+    // behind them. Do not close a round from an ambiguous combined count.
+    if election_has_paper_admissions(election) {
+        return None;
+    }
     election.expected_invitee_count.filter(|count| *count > 0)
+}
+
+fn election_has_paper_admissions(election: &ElectionRuntimeState) -> bool {
+    election.paper_ballot_admissions.values().any(|entry| {
+        matches!(entry.state.as_str(), "available" | "redeemed")
+    })
 }
 
 fn election_should_scan_public_submissions(election: &ElectionRuntimeState) -> bool {
@@ -1828,7 +1883,7 @@ fn election_should_scan_public_submissions(election: &ElectionRuntimeState) -> b
     {
         return false;
     }
-    known_expected_invitee_count(election)
+    election_has_paper_admissions(election) || known_expected_invitee_count(election)
         .is_some_and(|expected| election.accepted_response_count < expected)
 }
 
@@ -1854,12 +1909,9 @@ fn election_has_pending_completion_work(election: &ElectionRuntimeState) -> bool
 }
 
 fn election_has_pending_ballot_or_response_work(election: &ElectionRuntimeState) -> bool {
-    let Some(expected) = known_expected_invitee_count(election) else {
-        return false;
-    };
-    expected > 0
-        && (election.accepted_response_count < expected
-            || !election.deferred_blind_request_ids.is_empty())
+    (election_has_paper_admissions(election)
+        || known_expected_invitee_count(election).is_some_and(|expected| election.accepted_response_count < expected)
+        || !election.deferred_blind_request_ids.is_empty())
         && election.definition.is_some()
         && election.blind_signing_private_key.is_some()
         && election
@@ -2026,7 +2078,8 @@ fn is_empty_worker_election_config_without_eligibility(
         || snapshot.definition.is_some();
     let existing_has_eligibility = known_expected_invitee_count(election).is_some()
         || !election.whitelist_npubs.is_empty()
-        || !election.bearer_invite_codes.is_empty();
+        || !election.bearer_invite_codes.is_empty()
+        || !election.paper_ballot_admissions.is_empty();
     if carries_worker_material && !existing_has_eligibility {
         return false;
     }
@@ -2058,6 +2111,7 @@ fn is_empty_worker_election_config_without_eligibility(
         })
         .unwrap_or(0);
     incoming_whitelist_count == 0 && incoming_active_invite_code_count == 0
+        && !snapshot.paper_ballot_admissions.as_ref().is_some_and(|entries| entries.iter().any(|entry| entry.state != "revoked"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2083,13 +2137,62 @@ fn authorize_blind_request(
     election: &mut ElectionRuntimeState,
     request: &BlindBallotRequest,
 ) -> BlindRequestAuthorization {
-    if election.whitelist_npubs.contains(&request.invited_npub) {
+    if request.paper_ballot_admission_key.is_some()
+        && (!blind_request_ballot_group_authorized(election, request)
+            || !blind_request_proxy_authorized(election, request))
+    {
+        return BlindRequestAuthorization::Rejected;
+    }
+    if request.paper_ballot_admission_key.is_none() && election.whitelist_npubs.contains(&request.invited_npub) {
         if !blind_request_ballot_group_authorized(election, request) {
             return BlindRequestAuthorization::Rejected;
         }
         return BlindRequestAuthorization::Authorized {
             state_changed: false,
         };
+    }
+
+    let paper_code_hash = request
+            .paper_ballot_admission_key
+        .as_deref()
+        .map(|entry| entry.trim().to_lowercase())
+        .filter(|entry| entry.len() == 64 && entry.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if let Some(code_hash) = paper_code_hash {
+        let legacy_bound_npub = election.paper_ballot_admissions.get(&code_hash)
+            .and_then(|entry| entry.redeemed_request_id.as_ref())
+            .and_then(|request_id| election.issued_issuances_by_request_id.get(request_id))
+            .filter(|issuance| issuance.election_id == request.election_id)
+            .map(|issuance| issuance.invited_npub.clone());
+        let Some(entry) = election.paper_ballot_admissions.get_mut(&code_hash) else {
+            return BlindRequestAuthorization::Rejected;
+        };
+        if entry.election_id != request.election_id
+            || entry.registry_key.trim().to_lowercase() != code_hash
+            || entry.state == "revoked"
+            || (entry.state != "redeemed" && is_expired(&entry.expires_at))
+        {
+            return BlindRequestAuthorization::Rejected;
+        }
+        if entry.state == "redeemed" {
+            let migrated = entry.redeemed_npub.is_none() && legacy_bound_npub.is_some();
+            if migrated {
+                entry.redeemed_npub = legacy_bound_npub;
+            }
+            return if entry.redeemed_npub.as_deref() == Some(request.invited_npub.as_str()) {
+                BlindRequestAuthorization::Authorized { state_changed: migrated }
+            } else {
+                BlindRequestAuthorization::Rejected
+            };
+        }
+        if entry.state != "available" {
+            return BlindRequestAuthorization::Rejected;
+        }
+        entry.state = "redeemed".to_string();
+        entry.redeemed_at = Some(now_iso());
+        entry.redeemed_request_id = Some(request.request_id.clone());
+        entry.redeemed_npub = Some(request.invited_npub.clone());
+        election.whitelist_npubs.insert(request.invited_npub.clone());
+        return BlindRequestAuthorization::Authorized { state_changed: true };
     }
 
     let invite_code_hash = request
@@ -5533,6 +5636,15 @@ impl WorkerRuntime {
                 );
                 return Ok(PreparedBlindIssuance::Deferred);
             }
+            if !definition_is_open(election.definition.as_ref().expect("checked above")) {
+                forget_deferred_blind_request(election, &request.request_id);
+                self.store.save(&state)?;
+                warn!(
+                    "blind request rejected because questionnaire is not open: election_id={}, request_id={}, invited_npub={}",
+                    request.election_id, request.request_id, request.invited_npub
+                );
+                return Ok(PreparedBlindIssuance::Handled);
+            }
             if !verify_general_invite_pow(
                 election.definition.as_ref().expect("checked above"),
                 &request,
@@ -6241,7 +6353,7 @@ fn prune_seen_control_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{QuestionnaireBlindPrivateKey, QuestionnaireDefinitionReference};
+    use crate::model::{PaperBallotAdmissionEntry, QuestionnaireBlindPrivateKey, QuestionnaireDefinitionReference};
     use blind_rsa_signatures::{DefaultRng, KeyPairSha384PSSDeterministic};
     use chrono::Duration as ChronoDuration;
     use serde_json::json;
@@ -6311,6 +6423,7 @@ mod tests {
             client_nonce: "nonce_worker_definition".to_string(),
             created_at: now_iso(),
             invite_code_hash: None,
+            paper_ballot_admission_key: None,
             general_invite_pow: None,
             ballot_scope: None,
         }
@@ -6904,6 +7017,7 @@ mod tests {
                 redeemed_npubs: vec![],
                 revoked_at: None,
             }]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -6929,6 +7043,62 @@ mod tests {
             election.definition_hash.as_deref(),
             Some(questionnaire_definition_hash(&definition).as_str())
         );
+    }
+
+    #[test]
+    fn worker_config_sync_preserves_a_locally_redeemed_paper_admission() {
+        let registry_key = "a".repeat(64);
+        let mut election = ElectionRuntimeState {
+            election_id: "q_paper_sync".to_string(),
+            paper_ballot_admissions: HashMap::from([(
+                registry_key.clone(),
+                PaperBallotAdmissionEntry {
+                    election_id: "q_paper_sync".to_string(),
+                    registry_key: registry_key.clone(),
+                    expires_at: "2030-01-01T00:00:00Z".to_string(),
+                    state: "redeemed".to_string(),
+                    redeemed_at: Some("2029-01-01T00:00:00Z".to_string()),
+                    redeemed_request_id: Some("request-1".to_string()),
+                    redeemed_issuance_id: None,
+                    redeemed_npub: Some("npub1paper".to_string()),
+                },
+            )]),
+            ..ElectionRuntimeState::default()
+        };
+        let snapshot = WorkerElectionConfigSnapshot {
+            message_type: "worker_election_config".to_string(),
+            schema_version: 1,
+            config_version: 1,
+            election_id: "q_paper_sync".to_string(),
+            delegation_id: "delegation_paper_sync".to_string(),
+            coordinator_npub: "npub1coordinator".to_string(),
+            worker_npub: "npub1worker".to_string(),
+            expected_invitee_count: Some(1),
+            whitelist_npubs: Some(vec![]),
+            proxy_voter_npubs: Some(vec![]),
+            ballot_groups_by_npub: Some(HashMap::new()),
+            bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: Some(vec![PaperBallotAdmissionEntry {
+                election_id: "q_paper_sync".to_string(),
+                registry_key: registry_key.clone(),
+                expires_at: "2030-01-01T00:00:00Z".to_string(),
+                state: "available".to_string(),
+                redeemed_at: None,
+                redeemed_request_id: None,
+                redeemed_issuance_id: None,
+                redeemed_npub: None,
+            }]),
+            eligibility_required: Some(true),
+            blind_signing_private_key: None,
+            definition_reference: None,
+            definition: None,
+            sent_at: "2029-01-01T01:00:00Z".to_string(),
+        };
+
+        let snapshot = WorkerElectionConfigSnapshot { expected_invitee_count: Some(0), ..snapshot };
+        assert!(apply_worker_election_config(&mut election, &snapshot));
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "redeemed");
+        assert_eq!(election.paper_ballot_admissions[&registry_key].redeemed_request_id.as_deref(), Some("request-1"));
     }
 
     #[test]
@@ -7720,6 +7890,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
                 scheme: "rsa-blind-pss-sha384".to_string(),
@@ -8056,6 +8227,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8162,6 +8334,7 @@ mod tests {
                 proxy_voter_npubs: Some(vec![]),
                 ballot_groups_by_npub: Some(HashMap::new()),
                 bearer_invite_codes: Some(vec![]),
+                paper_ballot_admissions: None,
                 eligibility_required: Some(true),
                 blind_signing_private_key: None,
                 definition_reference: None,
@@ -8194,6 +8367,7 @@ mod tests {
             proxy_voter_npubs: Some(vec![]),
             ballot_groups_by_npub: Some(HashMap::new()),
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8251,6 +8425,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8309,6 +8484,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8342,6 +8518,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8393,6 +8570,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(false),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8427,6 +8605,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
                 scheme: "rsa-blind-pss-sha384".to_string(),
@@ -9438,6 +9617,164 @@ mod tests {
             authorize_blind_request(&mut election, &second_request),
             BlindRequestAuthorization::Rejected
         );
+    }
+
+    #[test]
+    fn paper_admission_authorizes_only_its_opaque_registry_key() {
+        let registry_key = "c".repeat(64);
+        let mut election = ElectionRuntimeState {
+            election_id: "q_worker_definition".to_string(),
+            eligibility_required: true,
+            paper_ballot_admissions: HashMap::from([(
+                registry_key.clone(),
+                PaperBallotAdmissionEntry {
+                    election_id: "q_worker_definition".to_string(),
+                    registry_key: registry_key.clone(),
+                    expires_at: "2030-01-01T00:00:00Z".to_string(),
+                    state: "available".to_string(),
+                    redeemed_at: None,
+                    redeemed_request_id: None,
+                    redeemed_issuance_id: None,
+                    redeemed_npub: None,
+                },
+            )]),
+            ..ElectionRuntimeState::default()
+        };
+        let mut request = sample_request();
+        request.paper_ballot_admission_key = Some(registry_key.clone());
+
+        request.ballot_scope = Some(json!({ "allowedScopes": ["0", "north"] }));
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        let mut assigned = election.clone();
+        assigned.ballot_groups_by_npub.insert(request.invited_npub.clone(), "north".to_string());
+        assert!(matches!(authorize_blind_request(&mut assigned, &request), BlindRequestAuthorization::Authorized { state_changed: true }));
+        request.ballot_scope = None;
+        request.ballot_scope = Some(json!({ "credentialIndex": 2, "allowedScopes": ["0"] }));
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        request.ballot_scope = None;
+
+        assert!(matches!(
+            authorize_blind_request(&mut election, &request),
+            BlindRequestAuthorization::Authorized { state_changed: true }
+        ));
+        assert_eq!(
+            election.paper_ballot_admissions[&registry_key].redeemed_request_id.as_deref(),
+            Some(request.request_id.as_str())
+        );
+        let issuance = build_blind_issuance(&request, &election, "signature".to_string(), now_iso());
+        election.issued_issuances_by_request_id.insert(request.request_id.clone(), issuance);
+        election.paper_ballot_admissions.get_mut(&registry_key).unwrap().redeemed_npub = None;
+        request.request_id = "second-scope".to_string();
+        request.ballot_scope = Some(json!({ "slotIndex": 2, "version": 1, "allowedScopes": ["0"] }));
+        assert!(matches!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Authorized { state_changed: true }));
+        assert_eq!(election.paper_ballot_admissions[&registry_key].redeemed_npub.as_deref(), Some(request.invited_npub.as_str()));
+        request.invited_npub = "npub1other".to_string();
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+    }
+
+    #[test]
+    fn paper_capacity_keeps_paper_only_and_mixed_rounds_scanning_without_count_completion() {
+        for expected in [0, 1] {
+            let mut election = active_public_submission_election();
+            election.expected_invitee_count = Some(expected);
+            election.accepted_response_count = expected;
+            let entry: PaperBallotAdmissionEntry = serde_json::from_value(json!({
+                "electionId": election.election_id, "registryKey": "c".repeat(64),
+                "expiresAt": "2030-01-01T00:00:00Z", "state": "available"
+            })).unwrap();
+            election.paper_ballot_admissions.insert(entry.registry_key.clone(), entry);
+            assert!(election_should_scan_public_submissions(&election));
+            assert!(!election_has_pending_completion_work(&election));
+            let entry = election.paper_ballot_admissions.values_mut().next().unwrap();
+            entry.state = "redeemed".to_string();
+            election.whitelist_npubs.insert("npub1paper".to_string());
+            assert!(election_should_scan_public_submissions(&election));
+            assert_eq!(known_expected_invitee_count(&election), None);
+            election.paper_ballot_admissions.values_mut().next().unwrap().expires_at = "2020-01-01T00:00:00Z".to_string();
+            assert!(election_should_scan_public_submissions(&election));
+            assert!(!election_has_pending_completion_work(&election));
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_definition_rejects_paper_admission_before_redemption() {
+        let coordinator_keys = Keys::generate();
+        let (runtime, state_dir) =
+            test_runtime_with_state(&coordinator_keys, WorkerPersistentState::default());
+        let mut request = sample_request();
+        let (mut definition, keypair) = test_definition_and_keypair(&request.election_id);
+        definition["closeAt"] = json!(2);
+        request.blind_signing_key_id = "key_test_public".to_string();
+        let mut rng = DefaultRng;
+        request.blinded_message = hex_bytes(&keypair
+            .pk
+            .blind(&mut rng, b"closed-paper-admission")
+            .expect("blind request token")
+            .blind_message
+            .0);
+        let registry_key = "c".repeat(64);
+        request.paper_ballot_admission_key = Some(registry_key.clone());
+        {
+            let mut state = runtime.state.lock().await;
+            state.elections.insert(
+                request.election_id.clone(),
+                ElectionRuntimeState {
+                    election_id: request.election_id.clone(),
+                    delegation_id: "delegation_closed".to_string(),
+                    expires_at: "2099-01-01T00:00:00Z".to_string(),
+                    capabilities: vec![WorkerCapability::IssueBlindTokens],
+                    eligibility_configured: true,
+                    eligibility_required: true,
+                    definition: Some(definition),
+                    blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
+                        scheme: "rsabssa-sha384-pss-deterministic-v1".to_string(),
+                        key_id: request.blind_signing_key_id.clone(),
+                        jwk: json!({}),
+                        private_jwk: private_jwk_from_keypair(&keypair),
+                    }),
+                    paper_ballot_admissions: HashMap::from([(
+                        registry_key.clone(),
+                        PaperBallotAdmissionEntry {
+                            election_id: request.election_id.clone(),
+                            registry_key: registry_key.clone(),
+                            expires_at: "2030-01-01T00:00:00Z".to_string(),
+                            state: "available".to_string(),
+                            redeemed_at: None,
+                            redeemed_request_id: None,
+                            redeemed_issuance_id: None,
+                            redeemed_npub: None,
+                        },
+                    )]),
+                    ..ElectionRuntimeState::default()
+                },
+            );
+        }
+
+        assert!(matches!(
+            runtime.prepare_blind_issuance(request.clone(), false).await.expect("prepare request"),
+            PreparedBlindIssuance::Handled
+        ));
+        let state = runtime.state.lock().await;
+        let election = state.elections.get(&request.election_id).expect("configured election");
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        assert!(!election.whitelist_npubs.contains(&request.invited_npub));
+        drop(state);
+        fs::remove_dir_all(state_dir).ok();
+    }
+
+    #[test]
+    fn legacy_paper_admission_with_plaintext_masterlist_number_has_no_registry_key() {
+        let parsed = serde_json::from_value::<PaperBallotAdmissionEntry>(json!({
+            "electionId": "q_worker_definition",
+            "codeHash": "a".repeat(64),
+            "masterlistNumber": "ML-001",
+            "expiresAt": "2030-01-01T00:00:00Z",
+            "state": "available"
+        }));
+
+        assert_eq!(parsed.expect("legacy entry parses for recovery").registry_key, "");
     }
 
     #[test]

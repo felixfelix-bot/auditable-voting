@@ -129,6 +129,7 @@ function makeDefinitionEvent(input: {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   sharedNostrPoolMocks.querySync.mockResolvedValue([]);
   sharedNostrPoolMocks.subscribeMany.mockReturnValue({
     close: vi.fn(),

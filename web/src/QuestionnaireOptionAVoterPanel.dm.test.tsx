@@ -260,6 +260,27 @@ afterEach(() => {
 });
 
 describe("QuestionnaireOptionAVoterPanel DM retrieval", () => {
+  it.each([null, "a".repeat(64)])("offers paper correction on the normal voter page with pending admission %s", async (paperBallotAdmissionKey) => {
+    window.history.pushState(null, "", "/?role=voter&q=q_paper_pending");
+    const state = { ...createEmptyVoterElectionLocalState({ electionId: "q_paper_pending", invitedNpub: "npub1" + "a".repeat(58), coordinatorNpub: "npub1" + "b".repeat(58), now: new Date().toISOString() }),
+      loginVerified: true, blindRequestSent: true, coordinatorNpub: "npub1" + "b".repeat(58) };
+    state.blindRequest = { type: "blind_ballot_request", schemaVersion: 1, electionId: state.electionId,
+      requestId: "pending", invitedNpub: state.invitedNpub, blindedMessage: "blind", blindSigningKeyId: "key",
+      clientNonce: "nonce", createdAt: new Date().toISOString(), paperBallotAdmissionKey };
+    vi.spyOn(QuestionnaireOptionAVoterRuntime.prototype, "getSnapshot").mockReturnValue(state);
+    const request = vi.spyOn(QuestionnaireOptionAVoterRuntime.prototype, "requestPaperBallotAdmission").mockResolvedValue(state);
+    const user = userEvent.setup();
+    render(<QuestionnaireOptionAVoterPanel />);
+    expect(await screen.findByLabelText("Master-list number")).toBeTruthy();
+    expect(screen.getByLabelText("Paper code")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use paper ballot code" })).toBeTruthy();
+    await user.type(screen.getByLabelText("Master-list number"), "ML-001");
+    await user.type(screen.getByLabelText("Paper code"), "ABCD1234EF");
+    await user.click(screen.getByRole("button", { name: "Use paper ballot code" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ masterlistNumber: "ML-001", code: "ABCD1234EF" }));
+    expect(screen.getByLabelText("Paper code")).toBeTruthy();
+  });
+
   it("uses the signed received credential scope when invite context is absent", () => {
     const issuance = {
       type: "blind_ballot_response" as const,
@@ -3278,7 +3299,7 @@ describe("QuestionnaireOptionAVoterPanel DM retrieval", () => {
       closeAt: 1781543600,
       coordinatorPubkey: "npub1" + "b".repeat(58),
       coordinatorEncryptionPubkey: "npub1" + "b".repeat(58),
-      responseMode: "course_feedback" as const,
+      responseMode: "blind_token" as const,
       responseVisibility: "private" as const,
       eligibilityMode: "open" as const,
       allowMultipleResponsesPerPubkey: false,

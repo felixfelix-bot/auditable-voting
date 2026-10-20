@@ -812,6 +812,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const settingsMode = displayMode === "settings";
   const [runtime, setRuntime] = useState<QuestionnaireOptionAVoterRuntime | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [paperBallotCode, setPaperBallotCode] = useState("");
+  const [paperBallotMasterlistNumber, setPaperBallotMasterlistNumber] = useState("");
   const [privateInviteBlock, setPrivateInviteBlock] = useState<PrivateInviteBlockState | null>(null);
   const [signedInNpub, setSignedInNpub] = useState<string>("");
   const [pendingInvites, setPendingInvites] = useState<ElectionInviteMessage[]>([]);
@@ -2762,6 +2764,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     }
   }
 
+  async function requestPaperBallot() {
+    if (!runtime) {
+      return;
+    }
+    try {
+      await runtime.requestPaperBallotAdmission({
+        code: paperBallotCode,
+        masterlistNumber: paperBallotMasterlistNumber,
+      });
+      setPaperBallotCode("");
+      setPaperBallotMasterlistNumber("");
+      setActiveInvite(null);
+      setStatus("Paper ballot request sent. Your anonymous ballot credential is pending receipt.");
+      setRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not request paper ballot access.");
+    }
+  }
+
   async function startQuestionnaire() {
     const difficulty = questionnaireDefinition?.generalInvitePowDifficulty ?? 0;
     const credentialReady = runtime?.getSnapshot()?.credentialReady ?? false;
@@ -4460,10 +4481,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     && !questionnaireStarted
     && !responseSubmittedForCurrentQuestionnaire
     && !allQuestionResponsesSubmitted;
+  const paperBallotAccess = !snapshot?.credentialReady && !snapshot?.submission ? <div className='simple-paper-ballot-access'>
+          <p className='simple-voter-note'>Have a paper ballot? Enter the code printed for your master-list record. These details are used only to admit you and never form part of your ballot.</p>
+          <label className='simple-voter-field'>
+            <span>Master-list number</span>
+            <input className='simple-voter-input' value={paperBallotMasterlistNumber} onChange={(event) => setPaperBallotMasterlistNumber(event.target.value)} autoComplete='off' />
+          </label>
+          <label className='simple-voter-field'>
+            <span>Paper code</span>
+            <input className='simple-voter-input' value={paperBallotCode} onChange={(event) => setPaperBallotCode(event.target.value)} autoComplete='off' maxLength={10} />
+          </label>
+          <UiButton icon='key' className='simple-voter-secondary' isDisabled={!snapshot?.loginVerified || Boolean(privateInviteBlock) || proofOfWorkInFlight || !paperBallotCode.trim() || !paperBallotMasterlistNumber.trim()} onPress={() => void requestPaperBallot()}>
+            Use paper ballot code
+          </UiButton>
+        </div> : null;
   const ballotStatusSection = (
     <section id='questionnaire-ballot-status' className='simple-settings-card' aria-label='Ballot status'>
       <h4 className='simple-voter-section-title'>Ballot status</h4>
       <div className='simple-voter-action-row simple-voter-action-row-inline simple-optiona-voter-controls'>
+        {paperBallotAccess}
         {!waitingForCredential ? (
           <UiButton icon='key' className='simple-voter-secondary' isDisabled={!canRequestOrResendBallot} onPress={() => void requestBallot()}>
             Request ballot
@@ -4684,6 +4720,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
         </section>
       ) : null}
       {privateInviteBlockCard}
+      {paperBallotAccess}
       {showQuestionnaireLanding ? (
         <section className='simple-questionnaire-voter-overview simple-questionnaire-voter-landing' aria-label='Questionnaire start'>
           <div className='simple-questionnaire-voter-title-block'>
