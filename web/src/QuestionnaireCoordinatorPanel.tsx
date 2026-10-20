@@ -2125,13 +2125,17 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       setPrivateQueueProgress(null);
       return;
     }
+    // `subscribePrivateQueueProgressDmsWithNsec` already returns the teardown
+    // function — `createSecretKeyGiftWrapSubscription` ends with `return close`.
+    // Reading `.close` off it yielded `undefined`, so the effect registered no
+    // cleanup and every re-run left the previous gift-wrap subscription open.
     return subscribePrivateQueueProgressDmsWithNsec({
       nsec: coordinatorNsec.trim(),
       workerNpub: pinnedWorker,
       electionId,
       relays: privateWorker.dmRelays,
       onProgress: setPrivateQueueProgress,
-    }).close;
+    });
   }, [activePublishedDefinition, activeWorkerDelegation, coordinatorNsec, questionnaireId]);
 
   const selectAvailableWorkerStatus = useCallback((snapshot: WorkerStatusSnapshot) => {
