@@ -15335,8 +15335,27 @@ body.demo-page .demo-workspace {
     line-height: 1.5;
   }
 
-  /* Hide everything that isn't the ballot-print container */
-  body > *:not(.ballot-print),
+  /* Keep every ancestor of a ballot visible, including the React root.
+     Hide sibling branches instead of hiding the root and its entire subtree. */
+  body:has(.ballot-print) *:not(.ballot-print):not(.ballot-print *):not(:has(.ballot-print)) {
+    display: none !important;
+  }
+
+  body:has(.ballot-print) *:has(.ballot-print) {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    width: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: white !important;
+    box-shadow: none !important;
+  }
+
   nav, .nav, .navigation, .sidebar, .header, footer,
   [role="navigation"], [role="tablist"], [role="menu"],
   .simple-theme-toggle, .simple-account-menu-trigger,
@@ -15353,7 +15372,11 @@ body.demo-page .demo-workspace {
     font-family: "Courier New", Courier, monospace;
     font-size: 11pt;
     line-height: 1.5;
-    page-break-after: avoid;
+    break-after: page;
+  }
+
+  .ballot-print:last-child {
+    break-after: auto;
   }
 
   .ballot-header {

@@ -13,6 +13,8 @@ import {
   OptionARuntimeError,
 } from "./questionnaireOptionARuntime";
 import type { BallotScope, BallotSubmission, ElectionInviteMessage, QuestionnaireAnswer, VoterElectionLocalState } from "./questionnaireOptionA";
+import { optionAAnswerToResponse } from "./questionnaireOptionA";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { deriveIdentityWords } from "./identityWords";
 import {
@@ -304,6 +306,7 @@ function mapDefinitionQuestions(definition: QuestionnaireDefinition) {
   return definition.questions.map((question) => ({
     questionId: question.questionId,
     required: question.required,
+    showIf: question.showIf,
     prompt: question.prompt,
     requiredScope: questionRequiredScope(question),
     ballotGroup: normaliseQuestionnaireBallotGroup(question.ballotGroup),
@@ -809,6 +812,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const settingsMode = displayMode === "settings";
   const [runtime, setRuntime] = useState<QuestionnaireOptionAVoterRuntime | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [paperBallotCode, setPaperBallotCode] = useState("");
+  const [paperBallotMasterlistNumber, setPaperBallotMasterlistNumber] = useState("");
   const [privateInviteBlock, setPrivateInviteBlock] = useState<PrivateInviteBlockState | null>(null);
   const [signedInNpub, setSignedInNpub] = useState<string>("");
   const [pendingInvites, setPendingInvites] = useState<ElectionInviteMessage[]>([]);
@@ -818,9 +823,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const [questionnaireTitle, setQuestionnaireTitle] = useState<string>("Questionnaire");
   const [questionnaireDescription, setQuestionnaireDescription] = useState<string>("");
   const [questionnaireDefinition, setQuestionnaireDefinition] = useState<QuestionnaireDefinition | null>(null);
-  const [questions, setQuestions] = useState<Array<{
+  const [allQuestions, setQuestions] = useState<Array<{
     questionId: string;
     required: boolean;
+    showIf?: QuestionnaireDefinition["questions"][number]["showIf"];
     prompt: string;
     requiredScope?: string | null;
     ballotGroup?: string | null;
@@ -963,6 +969,23 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     () => Array.from({ length: credentialCount }, (_, index) => index + 1),
     [credentialCount],
   );
+  const visibleQuestionIdsByCredential = useMemo(() => {
+    const questionMap = new Map(allQuestions.map(question => [question.questionId, question]));
+    return new Map(credentialIndexes.map(credentialIndex => {
+      const responses = allQuestions.flatMap(question => {
+        const key = showProxyBallotsTogether ? proxyAnswerKey(question.questionId, credentialIndex) : question.questionId;
+        const response = answerToOptionA(question, answers[key], false);
+        return response ? [optionAAnswerToResponse(response)] : [];
+      });
+      const answerMap = new Map(responses.map(response => [response.questionId, response]));
+      return [credentialIndex, new Set(allQuestions.filter(question => shouldShowQuestion(question, answerMap, questionMap)).map(question => question.questionId))];
+    }));
+  }, [allQuestions, answers, credentialIndexes, showProxyBallotsTogether]);
+  const questions = useMemo(() => allQuestions.filter(question => (
+    showProxyBallotsTogether
+      ? credentialIndexes.some(index => visibleQuestionIdsByCredential.get(index)?.has(question.questionId))
+      : visibleQuestionIdsByCredential.get(activeCredentialIndex)?.has(question.questionId)
+  )), [allQuestions, showProxyBallotsTogether, credentialIndexes, visibleQuestionIdsByCredential, activeCredentialIndex]);
 
   useEffect(() => {
     if (
@@ -2440,6 +2463,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   function buildDraftResponsesForCredential(credentialIndex = activeCredentialIndex, questionIds?: string[]) {
     const targetQuestionIds = questionIds && questionIds.length > 0 ? new Set(questionIds) : null;
     return questions
+      .filter((question) => visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId))
       .filter((question) => !targetQuestionIds || targetQuestionIds.has(question.questionId))
       .map((question) => {
         const key = answerKeyForQuestion(question.questionId, credentialIndex);
@@ -2737,6 +2761,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed.");
       return false;
+    }
+  }
+
+  async function requestPaperBallot() {
+    if (!runtime) {
+      return;
+    }
+    try {
+      await runtime.requestPaperBallotAdmission({
+        code: paperBallotCode,
+        masterlistNumber: paperBallotMasterlistNumber,
+      });
+      setPaperBallotCode("");
+      setPaperBallotMasterlistNumber("");
+      setActiveInvite(null);
+      setStatus("Paper ballot request sent. Your anonymous ballot credential is pending receipt.");
+      setRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not request paper ballot access.");
     }
   }
 
@@ -3681,6 +3724,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   });
 
   const questionHasResponseForCredential = (question: (typeof questions)[number], credentialIndex = activeCredentialIndex) => {
+    if (!visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)) return true;
     const value = answers[answerKeyForQuestion(question.questionId, credentialIndex)];
     if (Array.isArray(value)) {
       if (question.type === "rank") {
@@ -4437,10 +4481,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     && !questionnaireStarted
     && !responseSubmittedForCurrentQuestionnaire
     && !allQuestionResponsesSubmitted;
+  const paperBallotAccess = !snapshot?.credentialReady && !snapshot?.submission ? <div className='simple-paper-ballot-access'>
+          <p className='simple-voter-note'>Have a paper ballot? Enter the code printed for your master-list record. These details are used only to admit you and never form part of your ballot.</p>
+          <label className='simple-voter-field'>
+            <span>Master-list number</span>
+            <input className='simple-voter-input' value={paperBallotMasterlistNumber} onChange={(event) => setPaperBallotMasterlistNumber(event.target.value)} autoComplete='off' />
+          </label>
+          <label className='simple-voter-field'>
+            <span>Paper code</span>
+            <input className='simple-voter-input' value={paperBallotCode} onChange={(event) => setPaperBallotCode(event.target.value)} autoComplete='off' maxLength={10} />
+          </label>
+          <UiButton icon='key' className='simple-voter-secondary' isDisabled={!snapshot?.loginVerified || Boolean(privateInviteBlock) || proofOfWorkInFlight || !paperBallotCode.trim() || !paperBallotMasterlistNumber.trim()} onPress={() => void requestPaperBallot()}>
+            Use paper ballot code
+          </UiButton>
+        </div> : null;
   const ballotStatusSection = (
     <section id='questionnaire-ballot-status' className='simple-settings-card' aria-label='Ballot status'>
       <h4 className='simple-voter-section-title'>Ballot status</h4>
       <div className='simple-voter-action-row simple-voter-action-row-inline simple-optiona-voter-controls'>
+        {paperBallotAccess}
         {!waitingForCredential ? (
           <UiButton icon='key' className='simple-voter-secondary' isDisabled={!canRequestOrResendBallot} onPress={() => void requestBallot()}>
             Request ballot
@@ -4661,6 +4720,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
         </section>
       ) : null}
       {privateInviteBlockCard}
+      {paperBallotAccess}
       {showQuestionnaireLanding ? (
         <section className='simple-questionnaire-voter-overview simple-questionnaire-voter-landing' aria-label='Questionnaire start'>
           <div className='simple-questionnaire-voter-title-block'>
@@ -4790,7 +4850,9 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
                             </span>
                           )}
                         </div>
-                        {renderQuestionControls(question, credentialIndex, ballotSubmitted)}
+                        {visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)
+                          ? renderQuestionControls(question, credentialIndex, ballotSubmitted)
+                          : <p className='simple-voter-note'>This question does not apply to this ballot.</p>}
                       </section>
                     );
                   })}

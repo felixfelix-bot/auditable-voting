@@ -974,6 +974,30 @@ fn apply_worker_election_config(
     if let Some(codes) = &snapshot.bearer_invite_codes {
         merge_bearer_invite_codes(election, codes);
     }
+    if let Some(admissions) = &snapshot.paper_ballot_admissions {
+        let configured_admissions = admissions
+            .iter()
+            .filter(|entry| entry.election_id == snapshot.election_id)
+            .map(|entry| (entry.registry_key.trim().to_lowercase(), entry.clone()))
+            .filter(|(registry_key, entry)| {
+                registry_key.len() == 64
+                    && registry_key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && entry.state != "revoked"
+            })
+            .collect::<HashMap<_, _>>();
+        election.paper_ballot_admissions = configured_admissions
+            .into_iter()
+            .map(|(registry_key, entry)| {
+                let entry = election
+                    .paper_ballot_admissions
+                    .get(&registry_key)
+                    .filter(|local| local.state == "redeemed")
+                    .cloned()
+                    .unwrap_or(entry);
+                (registry_key, entry)
+            })
+            .collect();
+    }
     let blind_key_material_changed = blind_signing_key_material_changed(
         election.blind_signing_private_key.as_ref(),
         snapshot.blind_signing_private_key.as_ref(),
@@ -1104,6 +1128,10 @@ fn verify_general_invite_pow(definition: &serde_json::Value, request: &BlindBall
             .invite_code_hash
             .as_deref()
             .is_some_and(|hash| !hash.trim().is_empty())
+        || request
+            .paper_ballot_admission_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
     {
         return true;
     }
@@ -1316,7 +1344,173 @@ fn submission_answers_authorized_for_proofs(
             return false;
         }
     }
-    true
+    submission_conditions_valid(definition, submission)
+}
+
+fn submission_conditions_valid(
+    definition: &serde_json::Value,
+    submission: &QuestionnaireBlindResponseEvent,
+) -> bool {
+    let Some(questions) = definition.get("questions").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    let mut visible = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut answers = HashMap::new();
+    for answer in &submission.answers {
+        let Some(id) = answer.get("questionId").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        if answers.insert(id, answer).is_some() {
+            return false;
+        }
+        let Some(question) = questions.iter().find(|q| q.get("questionId").and_then(|v| v.as_str()) == Some(id)) else {
+            return false;
+        };
+        if answer.get("answerType") != question.get("type") {
+            return false;
+        }
+        match answer.get("answerType").and_then(|v| v.as_str()) {
+            Some("yes_no") if answer.get("value").and_then(|v| v.as_bool()).is_some() => {}
+            Some("multiple_choice" | "rank") => {
+                let ranked = answer["answerType"] == "rank";
+                let field = if ranked { "rankedOptionIds" } else { "selectedOptionIds" };
+                let Some(ids) = answer.get(field).and_then(|v| v.as_array()) else { return false; };
+                let options = question.get("options").and_then(|v| v.as_array());
+                if !ids.iter().all(|id| id.as_str().is_some() && options.is_some_and(|options| options.iter().any(|option| option.get("optionId") == Some(id)))) {
+                    return false;
+                }
+                if ranked {
+                    let minimum = question.get("minimumRanked").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let unique: HashSet<_> = ids.iter().filter_map(|v| v.as_str()).collect();
+                    if ids.len() < minimum || unique.len() != ids.len() { return false; }
+                } else if question.get("multiSelect").and_then(|v| v.as_bool()) != Some(true) && ids.len() != 1 {
+                    return false;
+                }
+            }
+            Some("free_text") => {
+                let Some(text) = answer.get("text").and_then(|v| v.as_str()) else { return false; };
+                // The worker cannot check plaintext length for coordinator-encrypted text.
+                // JavaScript string lengths count UTF-16 code units.
+                if !text.trim().starts_with("enc:nip44v2:")
+                    && question.get("maxLength").and_then(|v| v.as_u64()).is_some_and(|max| text.encode_utf16().count() as u64 > max)
+                { return false; }
+            }
+            _ => return false,
+        }
+    }
+    let proofs = blind_response_proofs(submission);
+    for (index, question) in questions.iter().enumerate() {
+        let Some(id) = question.get("questionId").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let condition = question.get("showIf").filter(|v| !v.is_null());
+        let is_visible = if let Some(condition) = condition {
+            let Some(dep) = condition
+                .get("dependsOnQuestionId")
+                .and_then(|v| v.as_str())
+            else {
+                return false;
+            };
+            // Definitions only permit references to earlier questions.
+            if !seen.contains(dep) {
+                return false;
+            }
+            let Some(required) = condition.get("requiredAnswer") else {
+                return false;
+            };
+            let dep_question = questions
+                .iter()
+                .find(|q| q.get("questionId").and_then(|v| v.as_str()) == Some(dep))
+                .unwrap();
+            let required_type = required.get("answerType").and_then(|v| v.as_str());
+            if required_type != dep_question.get("type").and_then(|v| v.as_str()) {
+                return false;
+            }
+            let matches = match required_type {
+                Some("yes_no") => {
+                    let Some(value) = required.get("value").and_then(|v| v.as_bool()) else {
+                        return false;
+                    };
+                    answers.get(dep).is_some_and(|answer| {
+                        answer.get("value").and_then(|v| v.as_bool()) == Some(value)
+                    })
+                }
+                Some("multiple_choice") => {
+                    let Some(ids) = required.get("selectedOptionIds").and_then(|v| v.as_array())
+                    else {
+                        return false;
+                    };
+                    let options = dep_question.get("options").and_then(|v| v.as_array());
+                    if ids.is_empty()
+                        || !ids.iter().all(|id| {
+                            id.as_str().is_some()
+                                && options.is_some_and(|options| {
+                                    options
+                                        .iter()
+                                        .any(|option| option.get("optionId") == Some(id))
+                                })
+                        })
+                    {
+                        return false;
+                    }
+                    answers
+                        .get(dep)
+                        .and_then(|answer| answer.get("selectedOptionIds"))
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|selected| ids.iter().all(|id| selected.contains(id)))
+                }
+                _ => return false,
+            };
+            visible.contains(dep) && matches
+        } else {
+            true
+        };
+        seen.insert(id);
+        if is_visible {
+            visible.insert(id);
+        }
+        if answers.contains_key(id) && !is_visible {
+            return false;
+        }
+        let covered = proofs.iter().any(|proof| {
+            let scope = proof.ballot_scope.as_ref();
+            let allowed = scope_allowed_scopes(&proof.ballot_scope);
+            let required_scope = question.get("requiredScope").and_then(|v| v.as_str());
+            if !allowed_scopes_allow_question(&allowed, required_scope) {
+                return false;
+            }
+            if definition
+                .get("ballotCredentialMode")
+                .and_then(|v| v.as_str())
+                != Some("per_question")
+            {
+                return true;
+            }
+            let Some(scope) = scope else {
+                return false;
+            };
+            let slot = question.get("ballotSlot");
+            let slot_index = slot
+                .and_then(|s| s.get("slotIndex"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(index as u64 + 1);
+            let version = slot
+                .and_then(|s| s.get("version"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
+            get_scope_positive_integer(scope, "slotIndex", "slot_index") == Some(slot_index)
+                && get_scope_positive_integer(scope, "version", "version").unwrap_or(1) == version
+        });
+        if covered
+            && is_visible
+            && question.get("required").and_then(|v| v.as_bool()) == Some(true)
+            && !answers.contains_key(id)
+        {
+            return false;
+        }
+    }
+    answers.keys().all(|id| seen.contains(id))
 }
 
 fn blind_response_token_commitments(submission: &QuestionnaireBlindResponseEvent) -> Vec<String> {
@@ -1599,6 +1793,7 @@ fn has_effective_eligibility_config(election: &ElectionRuntimeState) -> bool {
         || election.eligibility_required
         || !election.whitelist_npubs.is_empty()
         || !election.bearer_invite_codes.is_empty()
+        || !election.paper_ballot_admissions.is_empty()
 }
 
 fn deferred_blind_request_ready_for_retry(
@@ -1610,6 +1805,10 @@ fn deferred_blind_request_ready_for_retry(
             .invite_code_hash
             .as_ref()
             .is_some_and(|code_hash| election.bearer_invite_codes.contains_key(code_hash))
+        || request
+            .paper_ballot_admission_key
+            .as_ref()
+            .is_some_and(|code_hash| election.paper_ballot_admissions.contains_key(&code_hash.trim().to_lowercase()))
 }
 
 fn definition_uses_per_question_credentials(definition: &serde_json::Value) -> bool {
@@ -1617,6 +1816,17 @@ fn definition_uses_per_question_credentials(definition: &serde_json::Value) -> b
         .get("ballotCredentialMode")
         .and_then(|entry| entry.as_str())
         == Some("per_question")
+}
+
+fn definition_is_open(definition: &serde_json::Value) -> bool {
+    let now = Utc::now().timestamp();
+    let Some(open_at) = definition.get("openAt").and_then(|value| value.as_i64()) else {
+        return false;
+    };
+    let Some(close_at) = definition.get("closeAt").and_then(|value| value.as_i64()) else {
+        return false;
+    };
+    open_at <= now && now < close_at
 }
 
 fn election_needs_legacy_control_replay(election: &ElectionRuntimeState) -> bool {
@@ -1651,7 +1861,18 @@ fn election_has_public_submission_capability(election: &ElectionRuntimeState) ->
 }
 
 fn known_expected_invitee_count(election: &ElectionRuntimeState) -> Option<u64> {
+    // Paper redemptions join the whitelist, but the configured count can lag
+    // behind them. Do not close a round from an ambiguous combined count.
+    if election_has_paper_admissions(election) {
+        return None;
+    }
     election.expected_invitee_count.filter(|count| *count > 0)
+}
+
+fn election_has_paper_admissions(election: &ElectionRuntimeState) -> bool {
+    election.paper_ballot_admissions.values().any(|entry| {
+        matches!(entry.state.as_str(), "available" | "redeemed")
+    })
 }
 
 fn election_should_scan_public_submissions(election: &ElectionRuntimeState) -> bool {
@@ -1662,7 +1883,7 @@ fn election_should_scan_public_submissions(election: &ElectionRuntimeState) -> b
     {
         return false;
     }
-    known_expected_invitee_count(election)
+    election_has_paper_admissions(election) || known_expected_invitee_count(election)
         .is_some_and(|expected| election.accepted_response_count < expected)
 }
 
@@ -1688,12 +1909,9 @@ fn election_has_pending_completion_work(election: &ElectionRuntimeState) -> bool
 }
 
 fn election_has_pending_ballot_or_response_work(election: &ElectionRuntimeState) -> bool {
-    let Some(expected) = known_expected_invitee_count(election) else {
-        return false;
-    };
-    expected > 0
-        && (election.accepted_response_count < expected
-            || !election.deferred_blind_request_ids.is_empty())
+    (election_has_paper_admissions(election)
+        || known_expected_invitee_count(election).is_some_and(|expected| election.accepted_response_count < expected)
+        || !election.deferred_blind_request_ids.is_empty())
         && election.definition.is_some()
         && election.blind_signing_private_key.is_some()
         && election
@@ -1860,7 +2078,8 @@ fn is_empty_worker_election_config_without_eligibility(
         || snapshot.definition.is_some();
     let existing_has_eligibility = known_expected_invitee_count(election).is_some()
         || !election.whitelist_npubs.is_empty()
-        || !election.bearer_invite_codes.is_empty();
+        || !election.bearer_invite_codes.is_empty()
+        || !election.paper_ballot_admissions.is_empty();
     if carries_worker_material && !existing_has_eligibility {
         return false;
     }
@@ -1892,6 +2111,7 @@ fn is_empty_worker_election_config_without_eligibility(
         })
         .unwrap_or(0);
     incoming_whitelist_count == 0 && incoming_active_invite_code_count == 0
+        && !snapshot.paper_ballot_admissions.as_ref().is_some_and(|entries| entries.iter().any(|entry| entry.state != "revoked"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1917,13 +2137,62 @@ fn authorize_blind_request(
     election: &mut ElectionRuntimeState,
     request: &BlindBallotRequest,
 ) -> BlindRequestAuthorization {
-    if election.whitelist_npubs.contains(&request.invited_npub) {
+    if request.paper_ballot_admission_key.is_some()
+        && (!blind_request_ballot_group_authorized(election, request)
+            || !blind_request_proxy_authorized(election, request))
+    {
+        return BlindRequestAuthorization::Rejected;
+    }
+    if request.paper_ballot_admission_key.is_none() && election.whitelist_npubs.contains(&request.invited_npub) {
         if !blind_request_ballot_group_authorized(election, request) {
             return BlindRequestAuthorization::Rejected;
         }
         return BlindRequestAuthorization::Authorized {
             state_changed: false,
         };
+    }
+
+    let paper_code_hash = request
+            .paper_ballot_admission_key
+        .as_deref()
+        .map(|entry| entry.trim().to_lowercase())
+        .filter(|entry| entry.len() == 64 && entry.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if let Some(code_hash) = paper_code_hash {
+        let legacy_bound_npub = election.paper_ballot_admissions.get(&code_hash)
+            .and_then(|entry| entry.redeemed_request_id.as_ref())
+            .and_then(|request_id| election.issued_issuances_by_request_id.get(request_id))
+            .filter(|issuance| issuance.election_id == request.election_id)
+            .map(|issuance| issuance.invited_npub.clone());
+        let Some(entry) = election.paper_ballot_admissions.get_mut(&code_hash) else {
+            return BlindRequestAuthorization::Rejected;
+        };
+        if entry.election_id != request.election_id
+            || entry.registry_key.trim().to_lowercase() != code_hash
+            || entry.state == "revoked"
+            || (entry.state != "redeemed" && is_expired(&entry.expires_at))
+        {
+            return BlindRequestAuthorization::Rejected;
+        }
+        if entry.state == "redeemed" {
+            let migrated = entry.redeemed_npub.is_none() && legacy_bound_npub.is_some();
+            if migrated {
+                entry.redeemed_npub = legacy_bound_npub;
+            }
+            return if entry.redeemed_npub.as_deref() == Some(request.invited_npub.as_str()) {
+                BlindRequestAuthorization::Authorized { state_changed: migrated }
+            } else {
+                BlindRequestAuthorization::Rejected
+            };
+        }
+        if entry.state != "available" {
+            return BlindRequestAuthorization::Rejected;
+        }
+        entry.state = "redeemed".to_string();
+        entry.redeemed_at = Some(now_iso());
+        entry.redeemed_request_id = Some(request.request_id.clone());
+        entry.redeemed_npub = Some(request.invited_npub.clone());
+        election.whitelist_npubs.insert(request.invited_npub.clone());
+        return BlindRequestAuthorization::Authorized { state_changed: true };
     }
 
     let invite_code_hash = request
@@ -4478,9 +4747,7 @@ impl WorkerRuntime {
     ) -> Result<()> {
         let publication = {
             let state = self.state.lock().await;
-            state
-                .elections
-                .get(election_id)
+            state.elections.get(election_id)
                 .and_then(|election| election.private_submission_publications.get(submission_id))
                 .cloned()
                 .context("private batch publication disappeared before completion")?
@@ -4520,7 +4787,9 @@ impl WorkerRuntime {
     ) -> Result<Event> {
         let existing = {
             let state = self.state.lock().await;
-            state.elections.get(election_id)
+            state
+                .elections
+                .get(election_id)
                 .and_then(|election| election.private_submission_publications.get(submission_id))
                 .and_then(|publication| publication.prepared_event_json.clone())
         };
@@ -5367,6 +5636,15 @@ impl WorkerRuntime {
                 );
                 return Ok(PreparedBlindIssuance::Deferred);
             }
+            if !definition_is_open(election.definition.as_ref().expect("checked above")) {
+                forget_deferred_blind_request(election, &request.request_id);
+                self.store.save(&state)?;
+                warn!(
+                    "blind request rejected because questionnaire is not open: election_id={}, request_id={}, invited_npub={}",
+                    request.election_id, request.request_id, request.invited_npub
+                );
+                return Ok(PreparedBlindIssuance::Handled);
+            }
             if !verify_general_invite_pow(
                 election.definition.as_ref().expect("checked above"),
                 &request,
@@ -6075,7 +6353,7 @@ fn prune_seen_control_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{QuestionnaireBlindPrivateKey, QuestionnaireDefinitionReference};
+    use crate::model::{PaperBallotAdmissionEntry, QuestionnaireBlindPrivateKey, QuestionnaireDefinitionReference};
     use blind_rsa_signatures::{DefaultRng, KeyPairSha384PSSDeterministic};
     use chrono::Duration as ChronoDuration;
     use serde_json::json;
@@ -6145,6 +6423,7 @@ mod tests {
             client_nonce: "nonce_worker_definition".to_string(),
             created_at: now_iso(),
             invite_code_hash: None,
+            paper_ballot_admission_key: None,
             general_invite_pow: None,
             ballot_scope: None,
         }
@@ -6366,7 +6645,7 @@ mod tests {
             answers: vec![json!({
                 "questionId": "q1",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             })],
         }
     }
@@ -6738,6 +7017,7 @@ mod tests {
                 redeemed_npubs: vec![],
                 revoked_at: None,
             }]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -6763,6 +7043,62 @@ mod tests {
             election.definition_hash.as_deref(),
             Some(questionnaire_definition_hash(&definition).as_str())
         );
+    }
+
+    #[test]
+    fn worker_config_sync_preserves_a_locally_redeemed_paper_admission() {
+        let registry_key = "a".repeat(64);
+        let mut election = ElectionRuntimeState {
+            election_id: "q_paper_sync".to_string(),
+            paper_ballot_admissions: HashMap::from([(
+                registry_key.clone(),
+                PaperBallotAdmissionEntry {
+                    election_id: "q_paper_sync".to_string(),
+                    registry_key: registry_key.clone(),
+                    expires_at: "2030-01-01T00:00:00Z".to_string(),
+                    state: "redeemed".to_string(),
+                    redeemed_at: Some("2029-01-01T00:00:00Z".to_string()),
+                    redeemed_request_id: Some("request-1".to_string()),
+                    redeemed_issuance_id: None,
+                    redeemed_npub: Some("npub1paper".to_string()),
+                },
+            )]),
+            ..ElectionRuntimeState::default()
+        };
+        let snapshot = WorkerElectionConfigSnapshot {
+            message_type: "worker_election_config".to_string(),
+            schema_version: 1,
+            config_version: 1,
+            election_id: "q_paper_sync".to_string(),
+            delegation_id: "delegation_paper_sync".to_string(),
+            coordinator_npub: "npub1coordinator".to_string(),
+            worker_npub: "npub1worker".to_string(),
+            expected_invitee_count: Some(1),
+            whitelist_npubs: Some(vec![]),
+            proxy_voter_npubs: Some(vec![]),
+            ballot_groups_by_npub: Some(HashMap::new()),
+            bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: Some(vec![PaperBallotAdmissionEntry {
+                election_id: "q_paper_sync".to_string(),
+                registry_key: registry_key.clone(),
+                expires_at: "2030-01-01T00:00:00Z".to_string(),
+                state: "available".to_string(),
+                redeemed_at: None,
+                redeemed_request_id: None,
+                redeemed_issuance_id: None,
+                redeemed_npub: None,
+            }]),
+            eligibility_required: Some(true),
+            blind_signing_private_key: None,
+            definition_reference: None,
+            definition: None,
+            sent_at: "2029-01-01T01:00:00Z".to_string(),
+        };
+
+        let snapshot = WorkerElectionConfigSnapshot { expected_invitee_count: Some(0), ..snapshot };
+        assert!(apply_worker_election_config(&mut election, &snapshot));
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "redeemed");
+        assert_eq!(election.paper_ballot_admissions[&registry_key].redeemed_request_id.as_deref(), Some("request-1"));
     }
 
     #[test]
@@ -7554,6 +7890,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
                 scheme: "rsa-blind-pss-sha384".to_string(),
@@ -7890,6 +8227,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -7996,6 +8334,7 @@ mod tests {
                 proxy_voter_npubs: Some(vec![]),
                 ballot_groups_by_npub: Some(HashMap::new()),
                 bearer_invite_codes: Some(vec![]),
+                paper_ballot_admissions: None,
                 eligibility_required: Some(true),
                 blind_signing_private_key: None,
                 definition_reference: None,
@@ -8028,6 +8367,7 @@ mod tests {
             proxy_voter_npubs: Some(vec![]),
             ballot_groups_by_npub: Some(HashMap::new()),
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8085,6 +8425,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8143,6 +8484,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8176,6 +8518,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8227,6 +8570,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(false),
             blind_signing_private_key: None,
             definition_reference: None,
@@ -8261,6 +8605,7 @@ mod tests {
             proxy_voter_npubs: None,
             ballot_groups_by_npub: None,
             bearer_invite_codes: Some(vec![]),
+            paper_ballot_admissions: None,
             eligibility_required: Some(true),
             blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
                 scheme: "rsa-blind-pss-sha384".to_string(),
@@ -8758,6 +9103,38 @@ mod tests {
                 .expect("configured definition")["openAt"] = json!(1);
         }
 
+        // Both private queueing and public acceptance must enforce conditions.
+        {
+            let mut state = runtime.state.lock().await;
+            state.elections.get_mut(questionnaire_id).unwrap().definition.as_mut().unwrap()["questions"]
+                .as_array_mut().unwrap().push(json!({
+                    "questionId":"q2", "type":"yes_no", "required":true,
+                    "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}
+                }));
+        }
+        let missing_child = runtime
+            .handle_private_ballot_submission(private.clone())
+            .await
+            .unwrap();
+        assert!(
+            !missing_child.accepted,
+            "a visible required child cannot be omitted"
+        );
+        let mut private = private;
+        private.submission.payload.responses[0]["answer"] = json!("no");
+        let mut hidden_answer = private.clone();
+        hidden_answer
+            .submission
+            .payload
+            .responses
+            .push(json!({"questionId":"q2", "type":"yes_no", "answer":"yes"}));
+        assert!(
+            !runtime
+                .handle_private_ballot_submission(hidden_answer)
+                .await
+                .unwrap()
+                .accepted
+        );
         let receipt = runtime
             .handle_private_ballot_submission(private.clone())
             .await
@@ -8897,7 +9274,7 @@ mod tests {
         wrong_group.answers = vec![json!({
             "questionId": "q_a",
             "answerType": "yes_no",
-            "answer": "yes"
+            "value": true
         })];
         assert!(runtime
             .handle_submission(wrong_group)
@@ -8923,12 +9300,12 @@ mod tests {
             json!({
                 "questionId": "q1",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             }),
             json!({
                 "questionId": "q_a",
                 "answerType": "yes_no",
-                "answer": "yes"
+                "value": true
             }),
         ];
         assert!(runtime
@@ -8944,6 +9321,197 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[tokio::test]
+    async fn public_acceptance_enforces_conditional_requiredness() {
+        let id = "public_conditions";
+        let (mut definition, keypair) = test_definition_and_keypair(id);
+        definition["questions"].as_array_mut().unwrap().push(json!({
+            "questionId":"q2", "type":"yes_no", "required":true,
+            "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}
+        }));
+        let mut state = WorkerPersistentState::default();
+        state.elections.insert(
+            id.into(),
+            ElectionRuntimeState {
+                election_id: id.into(),
+                definition: Some(definition),
+                ..ElectionRuntimeState::default()
+            },
+        );
+        let (runtime, state_dir) = test_runtime_with_state(&Keys::generate(), state);
+        for (index, answers, accepted) in [
+            (
+                0,
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":true})],
+                false,
+            ),
+            (
+                1,
+                vec![
+                    json!({"questionId":"q1", "answerType":"yes_no", "value":false}),
+                    json!({"questionId":"q2", "answerType":"yes_no", "value":true}),
+                ],
+                false,
+            ),
+            (
+                2,
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":false})],
+                true,
+            ),
+            (
+                3,
+                vec![
+                    json!({"questionId":"q1", "answerType":"yes_no", "value":true}),
+                    json!({"questionId":"q2", "answerType":"yes_no", "value":false}),
+                ],
+                true,
+            ),
+        ] {
+            let response_id = format!("response_{index}");
+            let mut submission = signed_submission(
+                &keypair,
+                id,
+                &response_id,
+                &format!("t{index}"),
+                &format!("n{index}"),
+            );
+            submission.answers = answers;
+            runtime.handle_submission(submission).await.unwrap();
+            let state = runtime.state.lock().await;
+            assert_eq!(
+                state.elections[id]
+                    .accepted_nullifiers
+                    .contains(&format!("n{index}")),
+                accepted
+            );
+        }
+        let _ = fs::remove_dir_all(state_dir);
+    }
+
+    #[test]
+    fn conditional_submission_validation() {
+        let (mut definition, keypair) = test_definition_and_keypair("conditions");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"yes_no", "required":true},
+            {"questionId":"q2", "type":"yes_no", "required":true,
+             "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"yes_no", "value":true}}},
+            {"questionId":"q3", "type":"yes_no", "required":true,
+             "showIf":{"dependsOnQuestionId":"q2", "requiredAnswer":{"answerType":"yes_no", "value":true}}}
+        ]);
+        let election = ElectionRuntimeState {
+            definition: Some(definition.clone()),
+            ..ElectionRuntimeState::default()
+        };
+        let mut submission = signed_submission(&keypair, "conditions", "r", "t", "n");
+        let yes =
+            |id: &str, value: bool| json!({"questionId":id, "answerType":"yes_no", "value":value});
+        submission.answers = vec![yes("q1", false)];
+        assert!(submission_answers_authorized_for_proofs(
+            &election,
+            &submission
+        ));
+        submission.answers = vec![yes("q1", true)];
+        assert!(
+            !submission_answers_authorized_for_proofs(&election, &submission),
+            "visible child is required"
+        );
+        submission.answers = vec![yes("q1", false), yes("q2", true), yes("q3", true)];
+        assert!(
+            !submission_answers_authorized_for_proofs(&election, &submission),
+            "hidden answers must be rejected"
+        );
+        submission.answers = vec![yes("q1", true), yes("q2", true), yes("q3", false)];
+        assert!(submission_answers_authorized_for_proofs(
+            &election,
+            &submission
+        ));
+        for malformed in [json!(null), json!("true"), json!(1)] {
+            submission.answers =
+                vec![json!({"questionId":"q1", "answerType":"yes_no", "value":malformed})];
+            assert!(!submission_answers_authorized_for_proofs(
+                &election,
+                &submission
+            ));
+        }
+        for malformed in [
+            json!(null),
+            json!({}),
+            json!({"answerType":"yes_no", "value":"true"}),
+        ] {
+            let mut bad = election.clone();
+            bad.definition.as_mut().unwrap()["questions"][1]["showIf"]["requiredAnswer"] =
+                malformed;
+            submission.answers = vec![yes("q1", false)];
+            assert!(!submission_answers_authorized_for_proofs(&bad, &submission));
+        }
+        submission.answers = vec![json!({"questionId":"q1", "answerType":"multiple_choice", "value":true, "selectedOptionIds":[]}), yes("q2", true), yes("q3", true)];
+        assert!(!submission_answers_authorized_for_proofs(&election, &submission), "the dependency answer type must match its question");
+    }
+
+    #[test]
+    fn conditional_validation_applies_free_text_limit_only_to_plaintext() {
+        let (mut definition, keypair) = test_definition_and_keypair("free_text_limit");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"free_text", "required":true, "maxLength":2}
+        ]);
+        let election = ElectionRuntimeState {
+            definition: Some(definition),
+            ..ElectionRuntimeState::default()
+        };
+        let mut submission = signed_submission(&keypair, "free_text_limit", "r", "t", "n");
+        for (text, accepted) in [
+            ("ok", true),
+            ("too long", false),
+            ("😀", true),
+            ("😀a", false),
+            ("enc:nip44v2:ciphertext", true),
+            ("  enc:nip44v2:ciphertext  ", true),
+        ] {
+            submission.answers = vec![json!({
+                "questionId":"q1", "answerType":"free_text", "text":text
+            })];
+            assert_eq!(
+                submission_answers_authorized_for_proofs(&election, &submission),
+                accepted,
+                "unexpected validation result for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_multiple_choice_and_malformed_answers() {
+        let (mut definition, keypair) = test_definition_and_keypair("multiple_conditions");
+        definition["questions"] = json!([
+            {"questionId":"q1", "type":"multiple_choice", "required":true, "multiSelect":true, "options":[{"optionId":"a"}, {"optionId":"b"}, {"optionId":"c"}]},
+            {"questionId":"q2", "type":"yes_no", "required":true, "showIf":{"dependsOnQuestionId":"q1", "requiredAnswer":{"answerType":"multiple_choice", "selectedOptionIds":["a", "b"]}}}
+        ]);
+        let mut election = ElectionRuntimeState { definition: Some(definition), ..ElectionRuntimeState::default() };
+        let mut submission = signed_submission(&keypair, "multiple_conditions", "r", "t", "n");
+        let selected = |ids: serde_json::Value| json!({"questionId":"q1", "answerType":"multiple_choice", "selectedOptionIds":ids});
+        submission.answers = vec![selected(json!(["a"]))];
+        assert!(submission_answers_authorized_for_proofs(&election, &submission));
+        submission.answers = vec![selected(json!(["a", "b", "c"]))];
+        assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+        submission.answers.push(json!({"questionId":"q2", "answerType":"yes_no", "value":true}));
+        assert!(submission_answers_authorized_for_proofs(&election, &submission));
+        for malformed in [json!(null), json!("a"), json!({}), json!([1])] {
+            submission.answers = vec![selected(malformed.clone())];
+            assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+            let mut bad = election.clone();
+            bad.definition.as_mut().unwrap()["questions"][1]["showIf"]["requiredAnswer"]["selectedOptionIds"] = malformed;
+            submission.answers = vec![selected(json!(["a"]))];
+            assert!(!submission_answers_authorized_for_proofs(&bad, &submission));
+        }
+        for (question_type, answer) in [
+            ("free_text", json!({"questionId":"q1", "answerType":"free_text"})),
+            ("rank", json!({"questionId":"q1", "answerType":"rank", "rankedOptionIds":null})),
+        ] {
+            election.definition.as_mut().unwrap()["questions"] = json!([{"questionId":"q1", "type":question_type, "required":true}]);
+            submission.answers = vec![answer];
+            assert!(!submission_answers_authorized_for_proofs(&election, &submission));
+        }
     }
 
     #[test]
@@ -9049,6 +9617,164 @@ mod tests {
             authorize_blind_request(&mut election, &second_request),
             BlindRequestAuthorization::Rejected
         );
+    }
+
+    #[test]
+    fn paper_admission_authorizes_only_its_opaque_registry_key() {
+        let registry_key = "c".repeat(64);
+        let mut election = ElectionRuntimeState {
+            election_id: "q_worker_definition".to_string(),
+            eligibility_required: true,
+            paper_ballot_admissions: HashMap::from([(
+                registry_key.clone(),
+                PaperBallotAdmissionEntry {
+                    election_id: "q_worker_definition".to_string(),
+                    registry_key: registry_key.clone(),
+                    expires_at: "2030-01-01T00:00:00Z".to_string(),
+                    state: "available".to_string(),
+                    redeemed_at: None,
+                    redeemed_request_id: None,
+                    redeemed_issuance_id: None,
+                    redeemed_npub: None,
+                },
+            )]),
+            ..ElectionRuntimeState::default()
+        };
+        let mut request = sample_request();
+        request.paper_ballot_admission_key = Some(registry_key.clone());
+
+        request.ballot_scope = Some(json!({ "allowedScopes": ["0", "north"] }));
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        let mut assigned = election.clone();
+        assigned.ballot_groups_by_npub.insert(request.invited_npub.clone(), "north".to_string());
+        assert!(matches!(authorize_blind_request(&mut assigned, &request), BlindRequestAuthorization::Authorized { state_changed: true }));
+        request.ballot_scope = None;
+        request.ballot_scope = Some(json!({ "credentialIndex": 2, "allowedScopes": ["0"] }));
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        request.ballot_scope = None;
+
+        assert!(matches!(
+            authorize_blind_request(&mut election, &request),
+            BlindRequestAuthorization::Authorized { state_changed: true }
+        ));
+        assert_eq!(
+            election.paper_ballot_admissions[&registry_key].redeemed_request_id.as_deref(),
+            Some(request.request_id.as_str())
+        );
+        let issuance = build_blind_issuance(&request, &election, "signature".to_string(), now_iso());
+        election.issued_issuances_by_request_id.insert(request.request_id.clone(), issuance);
+        election.paper_ballot_admissions.get_mut(&registry_key).unwrap().redeemed_npub = None;
+        request.request_id = "second-scope".to_string();
+        request.ballot_scope = Some(json!({ "slotIndex": 2, "version": 1, "allowedScopes": ["0"] }));
+        assert!(matches!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Authorized { state_changed: true }));
+        assert_eq!(election.paper_ballot_admissions[&registry_key].redeemed_npub.as_deref(), Some(request.invited_npub.as_str()));
+        request.invited_npub = "npub1other".to_string();
+        assert_eq!(authorize_blind_request(&mut election, &request), BlindRequestAuthorization::Rejected);
+    }
+
+    #[test]
+    fn paper_capacity_keeps_paper_only_and_mixed_rounds_scanning_without_count_completion() {
+        for expected in [0, 1] {
+            let mut election = active_public_submission_election();
+            election.expected_invitee_count = Some(expected);
+            election.accepted_response_count = expected;
+            let entry: PaperBallotAdmissionEntry = serde_json::from_value(json!({
+                "electionId": election.election_id, "registryKey": "c".repeat(64),
+                "expiresAt": "2030-01-01T00:00:00Z", "state": "available"
+            })).unwrap();
+            election.paper_ballot_admissions.insert(entry.registry_key.clone(), entry);
+            assert!(election_should_scan_public_submissions(&election));
+            assert!(!election_has_pending_completion_work(&election));
+            let entry = election.paper_ballot_admissions.values_mut().next().unwrap();
+            entry.state = "redeemed".to_string();
+            election.whitelist_npubs.insert("npub1paper".to_string());
+            assert!(election_should_scan_public_submissions(&election));
+            assert_eq!(known_expected_invitee_count(&election), None);
+            election.paper_ballot_admissions.values_mut().next().unwrap().expires_at = "2020-01-01T00:00:00Z".to_string();
+            assert!(election_should_scan_public_submissions(&election));
+            assert!(!election_has_pending_completion_work(&election));
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_definition_rejects_paper_admission_before_redemption() {
+        let coordinator_keys = Keys::generate();
+        let (runtime, state_dir) =
+            test_runtime_with_state(&coordinator_keys, WorkerPersistentState::default());
+        let mut request = sample_request();
+        let (mut definition, keypair) = test_definition_and_keypair(&request.election_id);
+        definition["closeAt"] = json!(2);
+        request.blind_signing_key_id = "key_test_public".to_string();
+        let mut rng = DefaultRng;
+        request.blinded_message = hex_bytes(&keypair
+            .pk
+            .blind(&mut rng, b"closed-paper-admission")
+            .expect("blind request token")
+            .blind_message
+            .0);
+        let registry_key = "c".repeat(64);
+        request.paper_ballot_admission_key = Some(registry_key.clone());
+        {
+            let mut state = runtime.state.lock().await;
+            state.elections.insert(
+                request.election_id.clone(),
+                ElectionRuntimeState {
+                    election_id: request.election_id.clone(),
+                    delegation_id: "delegation_closed".to_string(),
+                    expires_at: "2099-01-01T00:00:00Z".to_string(),
+                    capabilities: vec![WorkerCapability::IssueBlindTokens],
+                    eligibility_configured: true,
+                    eligibility_required: true,
+                    definition: Some(definition),
+                    blind_signing_private_key: Some(QuestionnaireBlindPrivateKey {
+                        scheme: "rsabssa-sha384-pss-deterministic-v1".to_string(),
+                        key_id: request.blind_signing_key_id.clone(),
+                        jwk: json!({}),
+                        private_jwk: private_jwk_from_keypair(&keypair),
+                    }),
+                    paper_ballot_admissions: HashMap::from([(
+                        registry_key.clone(),
+                        PaperBallotAdmissionEntry {
+                            election_id: request.election_id.clone(),
+                            registry_key: registry_key.clone(),
+                            expires_at: "2030-01-01T00:00:00Z".to_string(),
+                            state: "available".to_string(),
+                            redeemed_at: None,
+                            redeemed_request_id: None,
+                            redeemed_issuance_id: None,
+                            redeemed_npub: None,
+                        },
+                    )]),
+                    ..ElectionRuntimeState::default()
+                },
+            );
+        }
+
+        assert!(matches!(
+            runtime.prepare_blind_issuance(request.clone(), false).await.expect("prepare request"),
+            PreparedBlindIssuance::Handled
+        ));
+        let state = runtime.state.lock().await;
+        let election = state.elections.get(&request.election_id).expect("configured election");
+        assert_eq!(election.paper_ballot_admissions[&registry_key].state, "available");
+        assert!(!election.whitelist_npubs.contains(&request.invited_npub));
+        drop(state);
+        fs::remove_dir_all(state_dir).ok();
+    }
+
+    #[test]
+    fn legacy_paper_admission_with_plaintext_masterlist_number_has_no_registry_key() {
+        let parsed = serde_json::from_value::<PaperBallotAdmissionEntry>(json!({
+            "electionId": "q_worker_definition",
+            "codeHash": "a".repeat(64),
+            "masterlistNumber": "ML-001",
+            "expiresAt": "2030-01-01T00:00:00Z",
+            "state": "available"
+        }));
+
+        assert_eq!(parsed.expect("legacy entry parses for recovery").registry_key, "");
     }
 
     #[test]

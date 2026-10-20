@@ -56,7 +56,6 @@ vi.mock("./questionnaireOptionABlindDm", async () => {
     ...actual,
     fetchOptionAWorkerStatusDmsWithNsec: vi.fn().mockResolvedValue([]),
     subscribePrivateQueueProgressDmsWithNsec: vi.fn().mockReturnValue({ close: vi.fn() }),
-    subscribePrivateQueueProgressDmsWithNsec: vi.fn().mockReturnValue({ close: vi.fn() }),
     publishOptionAWorkerDelegationDm: vi.fn().mockResolvedValue({
       eventId: "mock-worker-delegation-dm",
       successes: 1,
@@ -130,6 +129,7 @@ function makeDefinitionEvent(input: {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   sharedNostrPoolMocks.querySync.mockResolvedValue([]);
   sharedNostrPoolMocks.subscribeMany.mockReturnValue({
     close: vi.fn(),

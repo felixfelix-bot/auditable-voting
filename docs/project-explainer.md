@@ -21,9 +21,11 @@ Observers can independently recompute the result from public data.
 
 1. An organiser admits a voter or confirms that a voter is eligible.
 2. The voter requests fresh blind ballot credentials for this questionnaire. Current questionnaires use one internal response group, or two credentials for that group when the voter is marked as a proxy voter; large bundles can be compressed before encryption, while small bundles stay plain JSON.
-3. The organiser or audit proxy signs the bundle without seeing the final token commitments and returns multi-credential blind signatures plus the public definition hash or event id in one private DM where possible.
-4. The voter submits the questionnaire response anonymously; all questions share one proof, like one multi-part question.
-5. Anyone can verify that accepted ballots are valid, unique, and correctly tallied.
+3. For paper ballots, the organiser prints a ten-character Crockford code, master-list number, UTC expiry and instructions for each conditional question. No voter private key is printed. The voter selects this route and enters both values to request, not yet receive, a blind credential. The issuer stores and receives only the combined election/number/code admission hash, expiry and redemption state. There is no separate master-list hash or persistent roster-to-admission mapping. Duplicate numbers are detected only in the open print batch. After reload, regenerating codes cannot automatically revoke the old ones; both may admit separate requests until redeemed, expired or explicitly revoked by admission key. Do not generate another batch for the same roster. The browser discards legacy records with separate roster identifiers and strips unknown admission metadata on load/save and recovery. The worker strips legacy identifiers and unknown fields; a record without a combined admission hash cannot authorise a request. The anonymous ballot contains neither paper value.
+   Paper code and number entry is on the normal Vote page and remains available for correction while an ordinary or paper request is pending. Corrections preserve the request ID and recovery secrets. Only at redemption, the registry adds the bound voter npub as lifecycle metadata; it then admits that voter's applicable credential bundle, never another identity. Paper grants are Main-only unless the organiser explicitly assigns the voter a group. Both issuers enforce that scope before consumption. For paper-only and mixed rounds, the worker scans configured public submissions without a positive expected count and disables count-based close/summary publication while non-revoked paper admissions remain configured, even after admission expiry. The organiser controls closure, avoiding premature completion or double-counting redeemed voters already in the whitelist.
+4. The organiser or audit proxy signs the bundle without seeing the final token commitments and returns multi-credential blind signatures plus the public definition hash or event id in one private DM where possible.
+5. The voter submits the questionnaire response anonymously; all questions share one proof, like one multi-part question.
+6. Anyone can verify that accepted ballots are valid, unique, and correctly tallied.
 
 The app itself renders in a light theme by default, with a calm dark theme one tap away via the sun/moon toggle in the corner of any screen. The choice is remembered per browser, first visits always start light (the system colour-scheme preference is deliberately not consulted), and the protocol behaves identically in both themes.
 
@@ -107,6 +109,8 @@ For a resident-style admission flow, the coordinator can upload a resident CSV, 
 Questionnaires can mix yes/no, multiple-choice, ranked-choice, and free-text questions. Free-text responses are plain unless the organiser requires encrypted responses, in which case encryption is applied automatically. Ranked-choice results are counted as points, with the highest total preferred: first choice gets one point per available option, later choices count down from there, and unranked options get `0` points.
 
 ## Current limitations
+
+Conditional follow-up questions use an earlier yes/no or multiple-choice answer from the same submitted ballot. For multiple-choice conditions, all specified options must be selected. Voters skip hidden questions, and submissions omit their saved answers. A hidden ancestor cannot reveal a later question through a stale answer. Only visible questions can require an answer. Browser checks and public/private worker checks reject hidden answers and missing visible required answers within the submitted credential coverage. Malformed condition values and answer selections fail validation.
 
 This is experimental software.
 

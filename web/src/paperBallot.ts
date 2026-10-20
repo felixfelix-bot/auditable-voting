@@ -1,86 +1,42 @@
-import type { QuestionnaireDefinition } from "./questionnaireProtocol";
-import { deriveNpubFromNsec } from "./nostrIdentity";
+import type { QuestionnaireDefinition, QuestionnaireQuestion } from "./questionnaireProtocol";
 
-export type PaperBallotOption = {
-  optionId: string;
-  label: string;
-};
-
-export type PaperBallotQuestion = {
-  questionId: string;
-  prompt: string;
-  type: string;
-  required: boolean;
-  options?: PaperBallotOption[];
-};
+export type PaperBallotQuestion = QuestionnaireQuestion & { conditionInstruction?: string };
 
 export interface PaperBallot {
   questionnaireId: string;
   questionnaireTitle: string;
   questions: PaperBallotQuestion[];
-  voterNsec: string;
-  voterNpub: string;
-  /** F3-1: on-screen display form of the voter nsec — NEVER the raw key. */
-  maskedNsec?: string;
-  /**
-   * F3-2: serial printed on the ballot. Issued from the admitted-roster
-   * numbering at generation time; checked against the roster at entry.
-   */
-  serialNumber?: string;
-  inviteCode?: string;
+  masterlistNumber: string;
+  code: string;
+  expiresAt: string;
   generatedAt: number;
 }
 
-export function maskNsec(nsec: string): string {
-  const trimmed = nsec.trim();
-  if (trimmed.length <= 12) {
-    return "•".repeat(trimmed.length);
-  }
-  return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
-}
-
-function formatQuestion(question: QuestionnaireDefinition["questions"][number]): PaperBallotQuestion {
-  const base = {
-    questionId: question.questionId,
-    prompt: question.prompt,
-    type: question.type,
-    required: question.required,
-  };
-
-  if (question.type === "multiple_choice" || question.type === "rank") {
-    return {
-      ...base,
-      options: question.options.map((opt) => ({
-        optionId: opt.optionId,
-        label: opt.label,
-      })),
-    };
-  }
-
-  return base;
-}
-
+// This object is for the current print session only. Never persist it.
 export function generatePaperBallot(input: {
   definition: QuestionnaireDefinition;
-  voterNsec: string;
-  inviteCode?: string;
-  serialNumber?: string;
+  masterlistNumber: string;
+  code: string;
+  expiresAt: string;
 }): PaperBallot {
-  const voterNpub = deriveNpubFromNsec(input.voterNsec);
-
-  if (!voterNpub) {
-    throw new Error("Invalid voter nsec: could not derive npub");
-  }
-
   return {
     questionnaireId: input.definition.questionnaireId,
     questionnaireTitle: input.definition.title,
-    questions: input.definition.questions.map(formatQuestion),
-    voterNsec: input.voterNsec,
-    voterNpub,
-    maskedNsec: maskNsec(input.voterNsec),
-    serialNumber: input.serialNumber,
-    inviteCode: input.inviteCode,
+    masterlistNumber: input.masterlistNumber,
+    code: input.code,
+    expiresAt: input.expiresAt,
     generatedAt: Date.now(),
+    questions: input.definition.questions.map((question) => {
+      const condition = question.showIf;
+      if (!condition) return { ...question };
+      const index = input.definition.questions.findIndex((candidate) => candidate.questionId === condition.dependsOnQuestionId);
+      const parent = input.definition.questions[index];
+      const answer = condition.requiredAnswer;
+      const requirement = answer.answerType === "yes_no"
+        ? `answered ${answer.value ? "Yes" : "No"}.`
+        : `includes all of: ${answer.selectedOptionIds.map((id) => parent?.type === "multiple_choice"
+          ? parent.options.find((option) => option.optionId === id)?.label ?? id : id).join("; ")}. Other selections are allowed.`;
+      return { ...question, conditionInstruction: `Answer only if question ${index + 1} (${parent?.prompt ?? condition.dependsOnQuestionId}) is applicable and ${requirement} Otherwise leave blank.` };
+    }),
   };
 }

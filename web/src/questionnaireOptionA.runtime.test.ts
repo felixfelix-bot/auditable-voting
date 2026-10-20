@@ -10,6 +10,7 @@ import type { BallotAcceptanceResult, BallotSubmission } from "./questionnaireOp
 import { reduceCoordinatorEvent, restoreCoordinatorElectionState } from "./questionnaireOptionA";
 import {
   dequeueBlindRequest,
+  enqueueBlindRequest,
   listBlindRequests,
   loadCoordinatorState,
   loadElectionSummary,
@@ -46,6 +47,7 @@ import {
   buildQuestionnaireBlindTokenSignedMessage,
 } from "./questionnaireBlindToken";
 import { hashQuestionnaireInviteCode } from "./questionnaireInviteCode";
+import { hashPaperBallotAdmissionKey } from "./paperBallotAdmission";
 import {
   generateQuestionnaireBlindKeyPair,
   signBlindedQuestionnaireToken,
@@ -932,6 +934,253 @@ describe("questionnaireOptionARuntime", () => {
     await recovered.recoverSubmittedBallotFromSelfDm();
     expect(recovered.getSnapshot()?.submission?.submissionId).toBe(submitted?.submissionId);
     expect(recovered.getSnapshot()?.draftResponses).toEqual(submitted?.payload.responses);
+  });
+
+  it("redeems a paper admission into a blind credential without placing paper identifiers in the ballot", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const code = "ABCD1234EF";
+    const masterlistNumber = "ML-001";
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code, masterlistNumber });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    coordinator.addWhitelistNpub(voterNpub);
+    const invite = (await coordinator.sendInvite(voterNpub, {
+      title: "Runtime", description: "Test", voteUrl: "https://example.org/vote",
+    })).invite;
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await voter.loginWithSigner(invite);
+    voter.updateDraftResponses([{ questionId: "q1", type: "yes_no", answer: "yes" }]);
+
+    await voter.requestPaperBallotAdmission({ code, masterlistNumber });
+    const recovered = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await recovered.loginWithSigner(invite);
+    expect(recovered.getSnapshot()?.blindRequest?.paperBallotAdmissionKey).toBe(registryKey);
+    await coordinator.processPendingBlindRequests();
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.state).toBe("redeemed");
+    voter.refreshIssuanceAndAcceptance();
+    await voter.submitVote(["q1"]);
+
+    const submission = voter.getSnapshot()?.submission;
+    expect(submission).toBeTruthy();
+    expect(JSON.stringify(submission)).not.toContain(code);
+    expect(JSON.stringify(submission)).not.toContain(masterlistNumber);
+    expect("paperBallotAdmissionKey" in (submission ?? {})).toBe(false);
+  });
+
+  it.each([false, true])("corrects pending ordinary and paper requests without replacing recovery secrets (per-question: %s)", async (perQuestion) => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    if (perQuestion) {
+      storeCachedQuestionnaireDefinition({
+        ...buildDefinition({ electionId, coordinatorNpub }), ballotCredentialMode: "per_question",
+        blindSigningPublicKey: coordinator.getSnapshot()!.election.blindSigningPublicKey,
+        questions: [1, 2].map((index) => ({ questionId: `q${index}`, type: "yes_no" as const, prompt: "Vote?", required: true,
+          ballotSlot: { slotId: `slot-${index}`, slotIndex: index, version: 1 } })),
+      });
+    }
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await voter.loginWithSigner(null);
+    await voter.requestBlindBallot();
+    const original = voter.getSnapshot()!;
+    await voter.requestPaperBallotAdmission({ code: "GHJK5678MN", masterlistNumber: "wrong" });
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    await voter.requestPaperBallotAdmission({ code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    expect(voter.getSnapshot()?.blindRequest?.requestId).toBe(original.blindRequest?.requestId);
+    expect(voter.getSnapshot()?.blindTokenSecret).toEqual(original.blindTokenSecret);
+    expect(voter.getSnapshot()?.blindRequest?.paperBallotAdmissionKey).toBe(registryKey);
+    expect(Object.values(voter.getSnapshot()?.blindRequests ?? {}).every((request) => request.paperBallotAdmissionKey === registryKey)).toBe(true);
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    expect(voter.getSnapshot()?.credentialReady).toBe(true);
+    const legacy = coordinator.getSnapshot()!;
+    delete legacy.paperBallotAdmissions![registryKey].redeemedNpub;
+    saveCoordinatorState({ coordinatorNpub, state: legacy });
+    const recovered = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await recovered.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    enqueueBlindRequest(voter.getSnapshot()!.blindRequest!);
+    await recovered.processPendingBlindRequests();
+    expect(recovered.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.redeemedNpub).toBe(voterNpub);
+  });
+
+  it("issues every paper bundle scope to the bound voter and rejects another identity", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    storeCachedQuestionnaireDefinition({
+      ...buildDefinition({ electionId, coordinatorNpub }),
+      ballotCredentialMode: "per_question",
+      blindSigningPublicKey: coordinator.getSnapshot()!.election.blindSigningPublicKey,
+      questions: [1, 2].map((index) => ({ questionId: `q${index}`, type: "yes_no" as const, prompt: "Vote?", required: true,
+        ballotSlot: { slotId: `slot-${index}`, slotIndex: index, version: 1 } })),
+    });
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await voter.loginWithSigner(null);
+    await voter.requestPaperBallotAdmission({ code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    await coordinator.processPendingBlindRequests();
+    voter.refreshIssuanceAndAcceptance();
+    expect(Object.keys(voter.getSnapshot()?.blindIssuances ?? {})).toHaveLength(2);
+    const recovered = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await recovered.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    expect(recovered.getSnapshot()?.paperBallotAdmissions?.[registryKey]).toMatchObject({ redeemedNpub: voterNpub });
+    const other = new QuestionnaireOptionAVoterRuntime(signer(otherNpub), electionId);
+    await other.loginWithSigner(null);
+    await other.requestPaperBallotAdmission({ code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    await recovered.processPendingBlindRequests();
+    other.refreshIssuanceAndAcceptance();
+    expect(Object.keys(other.getSnapshot()?.blindIssuances ?? {})).toHaveLength(0);
+  });
+
+  it("rejects an unassigned paper group before consuming admission", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await voter.loginWithSigner(null);
+    voter.setBearerInviteCode(null, { ballotGroup: "north" });
+    await voter.requestPaperBallotAdmission({ code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    await coordinator.processPendingBlindRequests();
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.state).toBe("available");
+    expect(coordinator.getSnapshot()?.whitelist[voterNpub]).toBeUndefined();
+    coordinator.addWhitelistNpub(voterNpub, { ballotGroup: "north" });
+    await voter.requestPaperBallotAdmission({ code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    await coordinator.processPendingBlindRequests();
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.state).toBe("redeemed");
+    voter.refreshIssuanceAndAcceptance();
+    expect(voter.getSnapshot()?.credentialReady).toBe(true);
+  });
+
+  it("does not redeem a paper admission for a blind request after the questionnaire closes", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const code = "ABCD1234EF";
+    const masterlistNumber = "ML-001";
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code, masterlistNumber });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    storeCachedQuestionnaireDefinition({
+      ...buildDefinition({ electionId, coordinatorNpub }),
+      closeAt: Math.floor(Date.now() / 1000) - 1,
+    });
+    const voter = new QuestionnaireOptionAVoterRuntime(signer(voterNpub), electionId);
+    await voter.loginWithSigner(null);
+    await voter.requestPaperBallotAdmission({ code, masterlistNumber });
+
+    await coordinator.processPendingBlindRequests();
+
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.state).toBe("available");
+    expect(coordinator.getSnapshot()?.whitelist[voterNpub]).toBeUndefined();
+  });
+
+  it("merges recovered paper admissions without allowing an empty snapshot to erase the local registry", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const localKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    const recoveredKey = await hashPaperBallotAdmissionKey({ electionId, code: "GHJK5678MN", masterlistNumber: "ML-002" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey: localKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    const state = coordinator.getSnapshot()!;
+    const applyRecovered = coordinator as unknown as { applyRecoveredCoordinatorStateSnapshot: (snapshot: {
+      electionId: string; coordinatorNpub: string; state: typeof state; lastUpdatedAt: string;
+    }) => boolean };
+
+    expect(applyRecovered.applyRecoveredCoordinatorStateSnapshot({
+      electionId,
+      coordinatorNpub,
+      state: {
+        ...state,
+        paperBallotAdmissions: {
+          [recoveredKey]: { electionId, registryKey: recoveredKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" },
+        },
+      },
+      lastUpdatedAt: new Date(Date.now() + 1_000).toISOString(),
+    })).toBe(true);
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions).toMatchObject({
+      [localKey]: { state: "available" },
+      [recoveredKey]: { state: "available" },
+    });
+
+    const merged = coordinator.getSnapshot()!;
+    expect(applyRecovered.applyRecoveredCoordinatorStateSnapshot({
+      electionId,
+      coordinatorNpub,
+      state: { ...merged, paperBallotAdmissions: {} },
+      lastUpdatedAt: new Date(Date.now() + 2_000).toISOString(),
+    })).toBe(true);
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions).toMatchObject({
+      [localKey]: { state: "available" },
+      [recoveredKey]: { state: "available" },
+    });
+  });
+
+  it("keeps a locally redeemed paper admission when recovery contains a stale available record", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const registryKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    const state = coordinator.getSnapshot()!;
+    const coordinatorState = coordinator as unknown as {
+      state: typeof state;
+      applyRecoveredCoordinatorStateSnapshot: (snapshot: {
+        electionId: string; coordinatorNpub: string; state: typeof state; lastUpdatedAt: string;
+      }) => boolean;
+    };
+    coordinatorState.state = {
+      ...state,
+      paperBallotAdmissions: {
+        [registryKey]: {
+          ...state.paperBallotAdmissions![registryKey],
+          state: "redeemed",
+          redeemedAt: "2026-01-01T00:00:00.000Z",
+          redeemedRequestId: "request-1",
+        },
+      },
+      lastUpdatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    expect(coordinatorState.applyRecoveredCoordinatorStateSnapshot({
+      electionId,
+      coordinatorNpub,
+      state: {
+        ...state,
+        paperBallotAdmissions: {
+          [registryKey]: { ...state.paperBallotAdmissions![registryKey], state: "available" },
+        },
+      },
+      lastUpdatedAt: "2026-01-01T00:01:00.000Z",
+    })).toBe(true);
+
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]).toMatchObject({
+      state: "redeemed",
+      redeemedRequestId: "request-1",
+    });
+
+    const locallyRedeemed = coordinator.getSnapshot()!;
+    expect(coordinatorState.applyRecoveredCoordinatorStateSnapshot({
+      electionId,
+      coordinatorNpub,
+      state: {
+        ...locallyRedeemed,
+        paperBallotAdmissions: {
+          [registryKey]: { ...locallyRedeemed.paperBallotAdmissions![registryKey], state: "revoked" },
+        },
+      },
+      lastUpdatedAt: "2026-01-01T00:02:00.000Z",
+    })).toBe(true);
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[registryKey]?.state).toBe("revoked");
+  });
+
+  it("cannot link regenerated codes for the same master-list record", async () => {
+    const coordinator = new QuestionnaireOptionACoordinatorRuntime(signer(coordinatorNpub), electionId);
+    await coordinator.loginWithSigner({ title: "Runtime", description: "Test", state: "open" });
+    const firstKey = await hashPaperBallotAdmissionKey({ electionId, code: "ABCD1234EF", masterlistNumber: "ML-001" });
+    const replacementKey = await hashPaperBallotAdmissionKey({ electionId, code: "GHJK5678MN", masterlistNumber: "ML-001" });
+
+    coordinator.addPaperBallotAdmission({ electionId, registryKey: firstKey, expiresAt: "2030-01-01T00:00:00Z", state: "available" });
+    coordinator.addPaperBallotAdmission({ electionId, registryKey: replacementKey, expiresAt: "2030-01-02T00:00:00Z", state: "available" });
+
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[firstKey]?.state).toBe("available");
+    expect(coordinator.getSnapshot()?.paperBallotAdmissions?.[replacementKey]?.state).toBe("available");
   });
 
   it("keeps public publication when only a local delegated queue worker is available", async () => {

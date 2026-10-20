@@ -1,145 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { generatePaperBallot } from "./paperBallot";
 import type { QuestionnaireDefinition } from "./questionnaireProtocol";
-import { deriveNpubFromNsec } from "./nostrIdentity";
-import { makeTestVoterIdentity } from "./testFixtures";
 
-// Generated per process — no key literal lives in this file (see testFixtures.ts).
-const { nsec: TEST_NSEC, npub: TEST_NPUB } = makeTestVoterIdentity();
-
-const minimalDefinition: QuestionnaireDefinition = {
-  schemaVersion: 1,
-  eventType: "questionnaire_definition",
-  responseMode: "public_submission_v1",
-  questionnaireId: "q_test123",
-  title: "Test Ballot",
-  createdAt: 1000,
-  openAt: 1000,
-  closeAt: 2000,
-  coordinatorPubkey: "abc123",
-  coordinatorEncryptionPubkey: "def456",
-  responseVisibility: "public",
-  eligibilityMode: "open",
-  allowMultipleResponsesPerPubkey: false,
+export const paperDefinition: QuestionnaireDefinition = {
+  schemaVersion: 1, eventType: "questionnaire_definition", responseMode: "blind_token",
+  questionnaireId: "q_paper", title: "Test Ballot", createdAt: 1000, openAt: 1000, closeAt: 2000,
+  coordinatorPubkey: "a".repeat(64), coordinatorEncryptionPubkey: "b".repeat(64),
+  responseVisibility: "public", eligibilityMode: "open", allowMultipleResponsesPerPubkey: false,
   questions: [
     { questionId: "q1", type: "yes_no", prompt: "Do you agree?", required: true },
-    { questionId: "q2", type: "free_text", prompt: "Comments:", required: false, maxLength: 500 },
+    { questionId: "q2", type: "free_text", maxLength: 1000, prompt: "Why?", required: true,
+      showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "yes_no", value: true } } },
   ],
 };
 
 describe("generatePaperBallot", () => {
-  it("generates a paper ballot from a definition with nsec and npub", () => {
-    const ballot = generatePaperBallot({ definition: minimalDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.questionnaireId).toBe("q_test123");
-    expect(ballot.questionnaireTitle).toBe("Test Ballot");
-    expect(ballot.voterNsec).toBe(TEST_NSEC);
-    expect(ballot.voterNpub).toBe(TEST_NPUB);
-    expect(ballot.inviteCode).toBeUndefined();
-    expect(ballot.generatedAt).toBeGreaterThan(0);
-    expect(typeof ballot.generatedAt).toBe("number");
-    expect(ballot.questions).toHaveLength(2);
+  it("uses paper admission fields without any voter identity or separate serial", () => {
+    const ballot = generatePaperBallot({ definition: paperDefinition, masterlistNumber: "ML-001", code: "ABCD1234EF", expiresAt: "2030-01-01T00:00:00Z" });
+    expect(ballot).toMatchObject({ questionnaireId: "q_paper", masterlistNumber: "ML-001", code: "ABCD1234EF" });
+    expect(Object.keys(ballot)).not.toEqual(expect.arrayContaining(["voterNsec", "voterNpub", "serialNumber"]));
+    expect(ballot.questions[1].conditionInstruction).toBe('Answer only if question 1 (Do you agree?) is applicable and answered Yes. Otherwise leave blank.');
   });
 
-  it("includes invite code when provided", () => {
-    const ballot = generatePaperBallot({
-      definition: minimalDefinition,
-      voterNsec: TEST_NSEC,
-      inviteCode: "abc123def456",
-    });
-
-    expect(ballot.inviteCode).toBe("abc123def456");
-  });
-
-  it("omits invite code when not provided", () => {
-    const ballot = generatePaperBallot({ definition: minimalDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.inviteCode).toBeUndefined();
-  });
-
-  it("formats questions with correct type and prompt", () => {
-    const ballot = generatePaperBallot({ definition: minimalDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.questions[0].questionId).toBe("q1");
-    expect(ballot.questions[0].prompt).toBe("Do you agree?");
-    expect(ballot.questions[0].type).toBe("yes_no");
-
-    expect(ballot.questions[1].questionId).toBe("q2");
-    expect(ballot.questions[1].prompt).toBe("Comments:");
-    expect(ballot.questions[1].type).toBe("free_text");
-  });
-
-  it("formats multiple choice questions with options", () => {
-    const mcDefinition: QuestionnaireDefinition = {
-      ...minimalDefinition,
-      questionnaireId: "q_mc_test",
-      title: "MC Ballot",
-      questions: [
-        {
-          questionId: "q1",
-          type: "multiple_choice",
-          prompt: "Choose one:",
-          required: true,
-          multiSelect: false,
-          options: [
-            { optionId: "opt_a", label: "Option A" },
-            { optionId: "opt_b", label: "Option B" },
-          ],
-        },
-      ],
-    };
-
-    const ballot = generatePaperBallot({ definition: mcDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.questions[0].type).toBe("multiple_choice");
-    expect(ballot.questions[0].prompt).toBe("Choose one:");
-    expect(ballot.questions[0].options).toHaveLength(2);
-    expect(ballot.questions[0].options[0].optionId).toBe("opt_a");
-    expect(ballot.questions[0].options[0].label).toBe("Option A");
-    expect(ballot.questions[0].options[1].optionId).toBe("opt_b");
-    expect(ballot.questions[0].options[1].label).toBe("Option B");
-  });
-
-  it("formats rank questions with options", () => {
-    const rankDefinition: QuestionnaireDefinition = {
-      ...minimalDefinition,
-      questionnaireId: "q_rank_test",
-      title: "Rank Ballot",
-      questions: [
-        {
-          questionId: "q1",
-          type: "rank",
-          prompt: "Rank these:",
-          required: true,
-          options: [
-            { optionId: "r1", label: "First" },
-            { optionId: "r2", label: "Second" },
-            { optionId: "r3", label: "Third" },
-          ],
-          minimumRanked: 2,
-        },
-      ],
-    };
-
-    const ballot = generatePaperBallot({ definition: rankDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.questions[0].type).toBe("rank");
-    expect(ballot.questions[0].options).toHaveLength(3);
-    expect(ballot.questions[0].options[0].label).toBe("First");
-  });
-
-  it("uses real current time for generatedAt", () => {
-    const before = Date.now();
-    const ballot = generatePaperBallot({ definition: minimalDefinition, voterNsec: TEST_NSEC });
-    const after = Date.now();
-
-    expect(ballot.generatedAt).toBeGreaterThanOrEqual(before);
-    expect(ballot.generatedAt).toBeLessThanOrEqual(after);
-  });
-
-  it("derives npub correctly from nsec", () => {
-    const ballot = generatePaperBallot({ definition: minimalDefinition, voterNsec: TEST_NSEC });
-
-    expect(ballot.voterNpub).toBe(deriveNpubFromNsec(TEST_NSEC));
+  it("prints all-of selection semantics and requires the parent to be applicable", () => {
+    const definition: QuestionnaireDefinition = { ...paperDefinition, questions: [
+      { questionId: "q1", type: "multiple_choice", multiSelect: true, prompt: "Choose projects", required: true,
+        options: [{ optionId: "a", label: "Garden" }, { optionId: "b", label: "Library" }] },
+      { questionId: "q2", type: "free_text", maxLength: 1000, prompt: "Why both?", required: true,
+        showIf: { dependsOnQuestionId: "q1", requiredAnswer: { answerType: "multiple_choice", selectedOptionIds: ["a", "b"] } } },
+    ] };
+    const ballot = generatePaperBallot({ definition, masterlistNumber: "1", code: "ABCD1234EF", expiresAt: "2030-01-01T00:00:00Z" });
+    expect(ballot.questions[1].conditionInstruction).toBe('Answer only if question 1 (Choose projects) is applicable and includes all of: Garden; Library. Other selections are allowed. Otherwise leave blank.');
   });
 });

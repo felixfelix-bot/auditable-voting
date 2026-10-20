@@ -6,18 +6,8 @@
     <title>Paper ballot print — review harness (PR #38)</title>
   </head>
   <body>
-    <!--
-      Review harness for PR #38 ONLY.
-
-      `PaperBallotPrint` is not reachable from the app's navigation on this
-      branch: the route that renders it ships with the batch-portal work (F4).
-      This page mounts the component directly so a reviewer can see exactly
-      what #38 changes — masked nsec, reveal-on-demand, serial row — without
-      pretending a resident can navigate here yet.
-
-      Not part of the production bundle: nothing in src/ imports this file.
-    -->
-    <div id="harness-root"></div>
+    <!-- Dev-only integration harness; not a production entrypoint. -->
+    <div id="root"><nav class="harness-navigation">Application navigation</nav><main><div id="harness-root"></div></main></div>
     <script type="module" src="/e2e/ballot-print-harness.ts"></script>
   </body>
 </html>
