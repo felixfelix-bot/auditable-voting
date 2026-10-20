@@ -13,6 +13,8 @@ import {
   OptionARuntimeError,
 } from "./questionnaireOptionARuntime";
 import type { BallotScope, BallotSubmission, ElectionInviteMessage, QuestionnaireAnswer, VoterElectionLocalState } from "./questionnaireOptionA";
+import { optionAAnswerToResponse } from "./questionnaireOptionA";
+import { shouldShowQuestion } from "./questionConditionEvaluator";
 import { deriveActorDisplayId } from "./actorDisplay";
 import { deriveIdentityWords } from "./identityWords";
 import {
@@ -37,8 +39,9 @@ import {
   questionnaireUsesPerQuestionCredentials,
   type QuestionnaireDefinition,
 } from "./questionnaireProtocol";
-import { resolveLocalised } from "./i18n/resolveLocale";
-import { useLocaleSafe } from "./i18n/LanguageContext";
+import { resolveLocalised, translatedText } from "./i18n/resolveLocale";
+import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
+import { t as uiText } from "./i18n/uiStrings";
 import type { SupportedLocale } from "./i18n/types";
 import { mergeQuestionnaireRelayHints } from "./questionnaireRelays";
 import { SIMPLE_DM_RELAYS } from "./simpleShardDm";
@@ -307,12 +310,13 @@ function mapDefinitionQuestions(definition: QuestionnaireDefinition, locale: Sup
   return definition.questions.map((question) => ({
     questionId: question.questionId,
     required: question.required,
-    prompt: resolveLocalised(question.prompt, locale),
+    showIf: question.showIf,
+    prompt: resolveLocalised(translatedText(question.prompt, question.translations?.prompt), locale),
     requiredScope: questionRequiredScope(question),
     ballotGroup: normaliseQuestionnaireBallotGroup(question.ballotGroup),
     type: question.type,
     options: question.type === "multiple_choice" || question.type === "rank"
-      ? question.options.map((option) => ({ ...option, label: resolveLocalised(option.label, locale) }))
+      ? question.options.map((option) => ({ ...option, label: resolveLocalised(translatedText(option.label, option.translations?.label), locale) }))
       : undefined,
     multiSelect: question.type === "multiple_choice" ? question.multiSelect : undefined,
     minimumRanked: question.type === "rank" ? question.minimumRanked : undefined,
@@ -437,11 +441,12 @@ const PRIVATE_INVITE_STATUS_QUICK_CHECK_TIME_BUDGET_MS = 1_800;
 const PRIVATE_INVITE_STATUS_QUICK_CHECK_MAX_PAGES = 2;
 type BallotWaitRefreshMode = "manual" | "lifecycle" | "background";
 
-function SubmittedStateLabel({ children = "Submitted" }: { children?: string }) {
+function SubmittedStateLabel({ children }: { children?: string }) {
+  const t = useTSafe();
   return (
     <p className='simple-questionnaire-voter-requirement is-submitted'>
       <UiIcon name='check' />
-      <span>{children}</span>
+      <span>{children ?? t("voterSubmitted")}</span>
     </p>
   );
 }
@@ -620,42 +625,44 @@ export function formatVoteActionButtonText(input: {
   allQuestionResponsesSubmitted: boolean;
   canAdvanceQuestionBeforeSubmit?: boolean;
   submitInFlight: boolean;
+  locale?: SupportedLocale;
 }) {
+  const t = (key: Parameters<typeof uiText>[0]) => uiText(key, input.locale ?? "en");
   const snapshot = input.snapshot;
   if (input.submitInFlight) {
-    return "Submitting...";
+    return t("voterSubmitting");
   }
   if (input.responseSubmitted && input.perQuestionMode && !input.allQuestionResponsesSubmitted) {
-    return "Next question";
+    return t("voterNextQuestion");
   }
   if (input.responseSubmitted || (input.perQuestionMode && input.allQuestionResponsesSubmitted)) {
-    return "View results";
+    return t("voterViewResults");
   }
   if (input.canAdvanceQuestionBeforeSubmit) {
-    return "Next";
+    return t("actionNext");
   }
   if (!input.requiredQuestionsAnswered) {
-    return "Answer required questions to continue";
+    return t("voterAnswerRequired");
   }
   if (input.canSubmitNow) {
-    return "Submit";
+    return t("actionSubmit");
   }
   if (!snapshot?.loginVerified) {
-    return "1/3 Confirming identity";
+    return t("voterConfirmingIdentity");
   }
   if (!input.coordinatorNpub.trim()) {
-    return "1/3 Finding organiser";
+    return t("voterFindingOrganiser");
   }
   if (!input.blindSigningKeyReady) {
-    return "1/3 Loading ballot key";
+    return t("voterLoadingBallotKey");
   }
   if (!input.ballotRequestSent) {
-    return "Requesting ballot";
+    return t("voterRequestingBallot");
   }
   if (!input.credentialReady) {
-    return "Awaiting ballot";
+    return t("voterAwaitingBallot");
   }
-  return "3/3 Preparing response";
+  return t("voterPreparingResponse");
 }
 
 function inviteMessageKey(invite: ElectionInviteMessage) {
@@ -690,18 +697,19 @@ function questionHelperText(question: {
   type: "yes_no" | "multiple_choice" | "rank" | "free_text";
   multiSelect?: boolean;
   minimumRanked?: number;
-}) {
+}, locale: SupportedLocale) {
+  const t = (key: Parameters<typeof uiText>[0]) => uiText(key, locale);
   if (question.type === "yes_no") {
     return "";
   }
   if (question.type === "multiple_choice") {
-    return question.multiSelect ? "Select all options that apply." : "Select one option.";
+    return question.multiSelect ? t("voterSelectAll") : t("voterSelectOne");
   }
   if (question.type === "rank") {
     const minimumRanked = Math.max(1, Math.floor(question.minimumRanked ?? 1));
-    return `Rank at least ${minimumRanked} in order of preference.`;
+    return t("voterRankAtLeast").replace("{count}", String(minimumRanked));
   }
-  return "Enter your response.";
+  return t("voterEnterResponse");
 }
 
 type QuestionnaireOptionAVoterPanelProps = {
@@ -813,8 +821,11 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const displayMode = props.displayMode ?? "vote";
   const settingsMode = displayMode === "settings";
   const { locale } = useLocaleSafe();
+  const t = useTSafe();
   const [runtime, setRuntime] = useState<QuestionnaireOptionAVoterRuntime | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [paperBallotCode, setPaperBallotCode] = useState("");
+  const [paperBallotMasterlistNumber, setPaperBallotMasterlistNumber] = useState("");
   const [privateInviteBlock, setPrivateInviteBlock] = useState<PrivateInviteBlockState | null>(null);
   const [signedInNpub, setSignedInNpub] = useState<string>("");
   const [pendingInvites, setPendingInvites] = useState<ElectionInviteMessage[]>([]);
@@ -824,9 +835,10 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   const [questionnaireTitle, setQuestionnaireTitle] = useState<string>("Questionnaire");
   const [questionnaireDescription, setQuestionnaireDescription] = useState<string>("");
   const [questionnaireDefinition, setQuestionnaireDefinition] = useState<QuestionnaireDefinition | null>(null);
-  const [questions, setQuestions] = useState<Array<{
+  const [allQuestions, setQuestions] = useState<Array<{
     questionId: string;
     required: boolean;
+    showIf?: QuestionnaireDefinition["questions"][number]["showIf"];
     prompt: string;
     requiredScope?: string | null;
     ballotGroup?: string | null;
@@ -969,6 +981,23 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     () => Array.from({ length: credentialCount }, (_, index) => index + 1),
     [credentialCount],
   );
+  const visibleQuestionIdsByCredential = useMemo(() => {
+    const questionMap = new Map(allQuestions.map(question => [question.questionId, question]));
+    return new Map(credentialIndexes.map(credentialIndex => {
+      const responses = allQuestions.flatMap(question => {
+        const key = showProxyBallotsTogether ? proxyAnswerKey(question.questionId, credentialIndex) : question.questionId;
+        const response = answerToOptionA(question, answers[key], false);
+        return response ? [optionAAnswerToResponse(response)] : [];
+      });
+      const answerMap = new Map(responses.map(response => [response.questionId, response]));
+      return [credentialIndex, new Set(allQuestions.filter(question => shouldShowQuestion(question, answerMap, questionMap)).map(question => question.questionId))];
+    }));
+  }, [allQuestions, answers, credentialIndexes, showProxyBallotsTogether]);
+  const questions = useMemo(() => allQuestions.filter(question => (
+    showProxyBallotsTogether
+      ? credentialIndexes.some(index => visibleQuestionIdsByCredential.get(index)?.has(question.questionId))
+      : visibleQuestionIdsByCredential.get(activeCredentialIndex)?.has(question.questionId)
+  )), [allQuestions, showProxyBallotsTogether, credentialIndexes, visibleQuestionIdsByCredential, activeCredentialIndex]);
 
   useEffect(() => {
     if (
@@ -1750,8 +1779,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       ?? readCachedQuestionnaireDefinition(electionId);
     if (localDefinition) {
       cacheDefinitionForVoting(localDefinition);
-      setQuestionnaireTitle(resolveLocalised(localDefinition.title, locale) || "Questionnaire");
-      setQuestionnaireDescription(resolveLocalised(localDefinition.description ?? "", locale));
+      setQuestionnaireTitle(resolveLocalised(translatedText(localDefinition.title, localDefinition.translations?.title), locale) || t("voterQuestionnaire"));
+      setQuestionnaireDescription(resolveLocalised(translatedText(localDefinition.description ?? "", localDefinition.translations?.description), locale));
       setQuestionnaireDefinition(localDefinition);
       setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(localDefinition, locale), activeBallotGroup));
     }
@@ -1774,8 +1803,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           return;
         }
         cacheDefinitionForVoting(latest);
-        setQuestionnaireTitle(resolveLocalised(latest.title, locale) || "Questionnaire");
-        setQuestionnaireDescription(resolveLocalised(latest.description ?? "", locale));
+        setQuestionnaireTitle(resolveLocalised(translatedText(latest.title, latest.translations?.title), locale) || t("voterQuestionnaire"));
+        setQuestionnaireDescription(resolveLocalised(translatedText(latest.description ?? "", latest.translations?.description), locale));
         setQuestionnaireDefinition(latest);
         setQuestions(filterQuestionsForBallotGroup(mapDefinitionQuestions(latest, locale), activeBallotGroup));
       })
@@ -2446,6 +2475,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   function buildDraftResponsesForCredential(credentialIndex = activeCredentialIndex, questionIds?: string[]) {
     const targetQuestionIds = questionIds && questionIds.length > 0 ? new Set(questionIds) : null;
     return questions
+      .filter((question) => visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId))
       .filter((question) => !targetQuestionIds || targetQuestionIds.has(question.questionId))
       .map((question) => {
         const key = answerKeyForQuestion(question.questionId, credentialIndex);
@@ -2746,6 +2776,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     }
   }
 
+  async function requestPaperBallot() {
+    if (!runtime) {
+      return;
+    }
+    try {
+      await runtime.requestPaperBallotAdmission({
+        code: paperBallotCode,
+        masterlistNumber: paperBallotMasterlistNumber,
+      });
+      setPaperBallotCode("");
+      setPaperBallotMasterlistNumber("");
+      setActiveInvite(null);
+      setStatus("Paper ballot request sent. Your anonymous ballot credential is pending receipt.");
+      setRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not request paper ballot access.");
+    }
+  }
+
   async function startQuestionnaire() {
     const difficulty = questionnaireDefinition?.generalInvitePowDifficulty ?? 0;
     const credentialReady = runtime?.getSnapshot()?.credentialReady ?? false;
@@ -2973,7 +3022,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           setActiveQuestionIndex(nextQuestionIndex);
           setStatus(null);
         } else {
-          setStatus("All question responses submitted.");
+          setStatus(t("voterAllSubmitted"));
         }
         setRefreshNonce((value) => value + 1);
         return;
@@ -2996,7 +3045,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
           setActiveQuestionIndex(nextQuestionIndex);
           setStatus(null);
         } else {
-          setStatus("All question responses submitted.");
+          setStatus(t("voterAllSubmitted"));
         }
       } else {
         setStatus(null);
@@ -3687,6 +3736,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
   });
 
   const questionHasResponseForCredential = (question: (typeof questions)[number], credentialIndex = activeCredentialIndex) => {
+    if (!visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)) return true;
     const value = answers[answerKeyForQuestion(question.questionId, credentialIndex)];
     if (Array.isArray(value)) {
       if (question.type === "rank") {
@@ -3824,26 +3874,26 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     && canSubmitNow
     && questionnaireCredentialReady;
   const submitFromQuestionNavLabel = firstMissingRequiredQuestionIndex >= 0
-    ? `Answer question ${firstMissingRequiredQuestionIndex + 1}`
+    ? `${t("voterAnswerQuestion")} ${firstMissingRequiredQuestionIndex + 1}`
     : !questionnaireCredentialReady
-      ? "Waiting for ballot credential"
-      : !snapshotForAction?.loginVerified
-        ? "Log in to submit"
+      ? t("voterWaitingCredential")
+    : !snapshotForAction?.loginVerified
+        ? t("voterLoginToSubmit")
         : submitInFlight
-          ? "Submitting..."
-          : "Submit";
+          ? t("voterSubmitting")
+          : t("actionSubmit");
   const questionNavForwardHighlighted = showViewResultsFromQuestionNav || canSubmitFromQuestionNav || (nextQuestionIndex >= 0 && activeQuestionReadyForNavigation);
   const activeQuestionProgressLabel = (() => {
     const questionPosition = Math.min(activeQuestionIndex + 1, Math.max(questions.length, 1));
     const questionCountLabel = questions.length > 0
-      ? `Question ${questionPosition} of ${questions.length}`
-      : "Question 0/0";
+      ? `${t("voterQuestion")} ${questionPosition} ${t("voterOf")} ${questions.length}`
+      : `${t("voterQuestion")} 0/0`;
     return questionCountLabel;
   })();
   const activeQuestionProgressPercent = questions.length > 0
     ? `${Math.min(100, Math.max(0, ((activeQuestionIndex + 1) / questions.length) * 100))}%`
     : "0%";
-  const combinedProxySubmitLabel = showProxyBallotsTogether && canSubmitNow ? "Submit" : "";
+  const combinedProxySubmitLabel = showProxyBallotsTogether && canSubmitNow ? t("actionSubmit") : "";
   const actionCoordinatorNpub = snapshotForAction?.coordinatorNpub?.trim()
     || (activeInvite?.electionId === actionQuestionnaireId ? activeInvite.coordinatorNpub?.trim() : "")
     || inviteDropdownOptions.find((invite) => invite.electionId === actionQuestionnaireId)?.coordinatorNpub?.trim()
@@ -3860,18 +3910,19 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
         const requirement = getRankRequirementState(activeQuestion.options?.length ?? 0, activeQuestion.minimumRanked ?? 0, ranked.length);
         if (requirement.missing > 0) {
           return requirement.missing === 1
-            ? "Choose 1 option to continue"
-            : `Choose ${requirement.missing} options to continue`;
+            ? t("voterChooseOneToContinue")
+            : t("voterChooseToContinue").replace("{count}", String(requirement.missing));
         }
       }
-      return "Answer this question to continue";
+      return t("voterAnswerThisQuestion");
     }
     if (showProxyBallotsTogether) {
-      return "Answer each separate vote to continue";
+      return t("voterAnswerEachVote");
     }
-    return "Answer required questions to continue";
+    return t("voterAnswerRequired");
   })();
   const formattedVoteActionButtonText = formatVoteActionButtonText({
+    locale,
     snapshot: snapshotForAction,
     requiredQuestionsAnswered: requiredQuestionsAnsweredForAction,
     canSubmitNow,
@@ -4072,23 +4123,23 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
       ? credentialIssuerIsProxy ? "Request sent" : `Waiting for ${credentialIssuerName}`
       : "Not requested";
   const submissionStateText = snapshot?.privateSubmissionQueued
-    ? "Queued privately"
+    ? t("voterQueuedPrivately")
     : snapshot?.submissionAccepted === true
-    ? "Accepted"
+    ? t("voterAccepted")
     : snapshot?.submissionAccepted === false
-      ? "Rejected"
+      ? t("voterRejected")
       : snapshot?.submission
         ? `Waiting for ${decisionActorName}`
-        : "Not submitted";
+        : t("voterNotSubmitted");
   const submittedMarkerNpub = displaySubmission?.responseNpub
     ?? displaySubmission?.invitedNpub
     ?? (!perQuestionMode ? snapshot?.responseNpub ?? "" : "");
   const submittedMarkerLabel = submittedMarkerNpub ? deriveActorDisplayId(submittedMarkerNpub) : "Unknown";
   const submittedMarkerWords = submittedMarkerNpub ? deriveIdentityWords(submittedMarkerNpub) : "";
   const receiptStatusLabel = snapshot?.privateSubmissionQueued
-    ? "Queued privately"
+    ? t("voterQueuedPrivately")
     : snapshot?.submissionAccepted === false
-      ? `Rejected${snapshot.privateSubmissionReceiptReason ? `: ${snapshot.privateSubmissionReceiptReason}` : ""}`
+      ? `${t("voterRejected")}${snapshot.privateSubmissionReceiptReason ? `: ${snapshot.privateSubmissionReceiptReason}` : ""}`
       : "";
   const submittedAtLabel = displaySubmission?.submittedAt
     ? new Date(displaySubmission.submittedAt).toLocaleString()
@@ -4178,7 +4229,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
               setAnswers((current) => ({ ...current, [key]: "yes" }));
             }}
           >
-            Yes
+            {t("answerYes")}
           </UiButton>
           <UiButton
             icon='cancel'
@@ -4197,7 +4248,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
               setAnswers((current) => ({ ...current, [key]: "no" }));
             }}
           >
-            No
+            {t("answerNo")}
           </UiButton>
         </div>
       );
@@ -4443,10 +4494,25 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
     && !questionnaireStarted
     && !responseSubmittedForCurrentQuestionnaire
     && !allQuestionResponsesSubmitted;
+  const paperBallotAccess = !snapshot?.credentialReady && !snapshot?.submission ? <div className='simple-paper-ballot-access'>
+          <p className='simple-voter-note'>Have a paper ballot? Enter the code printed for your master-list record. These details are used only to admit you and never form part of your ballot.</p>
+          <label className='simple-voter-field'>
+            <span>Master-list number</span>
+            <input className='simple-voter-input' value={paperBallotMasterlistNumber} onChange={(event) => setPaperBallotMasterlistNumber(event.target.value)} autoComplete='off' />
+          </label>
+          <label className='simple-voter-field'>
+            <span>Paper code</span>
+            <input className='simple-voter-input' value={paperBallotCode} onChange={(event) => setPaperBallotCode(event.target.value)} autoComplete='off' maxLength={10} />
+          </label>
+          <UiButton icon='key' className='simple-voter-secondary' isDisabled={!snapshot?.loginVerified || Boolean(privateInviteBlock) || proofOfWorkInFlight || !paperBallotCode.trim() || !paperBallotMasterlistNumber.trim()} onPress={() => void requestPaperBallot()}>
+            Use paper ballot code
+          </UiButton>
+        </div> : null;
   const ballotStatusSection = (
     <section id='questionnaire-ballot-status' className='simple-settings-card' aria-label='Ballot status'>
       <h4 className='simple-voter-section-title'>Ballot status</h4>
       <div className='simple-voter-action-row simple-voter-action-row-inline simple-optiona-voter-controls'>
+        {paperBallotAccess}
         {!waitingForCredential ? (
           <UiButton icon='key' className='simple-voter-secondary' isDisabled={!canRequestOrResendBallot} onPress={() => void requestBallot()}>
             Request ballot
@@ -4667,6 +4733,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
         </section>
       ) : null}
       {privateInviteBlockCard}
+      {paperBallotAccess}
       {showQuestionnaireLanding ? (
         <section className='simple-questionnaire-voter-overview simple-questionnaire-voter-landing' aria-label='Questionnaire start'>
           <div className='simple-questionnaire-voter-title-block'>
@@ -4692,12 +4759,12 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
               onPress={() => void startQuestionnaire()}
             >
               {proofOfWorkInFlight
-                ? "Solving proof of work..."
+                ? t("voterSolvingPow")
                 : (questionnaireDefinition?.generalInvitePowDifficulty ?? 0) > 0
                   ? savedProofOfWork
-                    ? "Resume ballot request"
-                    : "Start proof of work"
-                  : "Start"}
+                    ? t("voterResumeBallot")
+                    : t("voterStartPow")
+                  : t("voterStart")}
             </UiButton>
             {proofOfWorkInFlight ? (
               (() => {
@@ -4719,7 +4786,7 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
         <p className='simple-voter-note'>
           {snapshot?.submissionAccepted === true
             ? "Response accepted. Questionnaire details are not loaded in this browser."
-            : "Retrieving questions."}
+            : t("voterRetrievingQuestions")}
         </p>
       ) : showQuestionnaireLanding ? null : (
         <div className='simple-questionnaire-voter-list'>
@@ -4754,8 +4821,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
               <div className='simple-questionnaire-voter-heading'>
                 <span className='simple-questionnaire-question-badge' aria-hidden='true'>Q{index + 1}</span>
                 <div className='simple-questionnaire-voter-heading-copy'>
-                  <h4 className='simple-questionnaire-voter-prompt'>{question.prompt || "Untitled question"}</h4>
-                  <p className='simple-questionnaire-voter-helper'>{questionHelperText(question)}</p>
+                  <h4 className='simple-questionnaire-voter-prompt'>{question.prompt || t("voterUntitledQuestion")}</h4>
+                  <p className='simple-questionnaire-voter-helper'>{questionHelperText(question, locale)}</p>
                 </div>
               </div>
               {showProxyBallotsTogether ? (
@@ -4789,14 +4856,16 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
                         <div className='simple-questionnaire-proxy-vote-heading'>
                           <strong>Separate vote {credentialIndex}</strong>
                           {requirementLabel === "Submitted" || requirementLabel === "Accepted" ? (
-                            <SubmittedStateLabel>{requirementLabel}</SubmittedStateLabel>
+                            <SubmittedStateLabel>{ballotAccepted ? t("voterAccepted") : t("voterSubmitted")}</SubmittedStateLabel>
                           ) : (
                             <span className={`simple-questionnaire-voter-requirement${requirementClass}`}>
-                              {requirementLabel}
+                              {requirementLabel === "Required" ? t("statusRequired") : requirementLabel === "Optional" ? t("statusOptional") : requirementLabel === "Ready" ? t("voterReady") : requirementLabel}
                             </span>
                           )}
                         </div>
-                        {renderQuestionControls(question, credentialIndex, ballotSubmitted)}
+                        {visibleQuestionIdsByCredential.get(credentialIndex)?.has(question.questionId)
+                          ? renderQuestionControls(question, credentialIndex, ballotSubmitted)
+                          : <p className='simple-voter-note'>This question does not apply to this ballot.</p>}
                       </section>
                     );
                   })}
@@ -4818,8 +4887,8 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
                 }}
               >
                 <span className='simple-questionnaire-stepper-copy'>
-                  <strong>Previous</strong>
-                  <small>{previousQuestionIndex >= 0 ? `Question ${previousQuestionIndex + 1}` : "No previous question"}</small>
+                  <strong>{t("actionPrevious")}</strong>
+                  <small>{previousQuestionIndex >= 0 ? `${t("voterQuestion")} ${previousQuestionIndex + 1}` : t("voterNoPreviousQuestion")}</small>
                 </span>
               </UiButton>
               <UiButton
@@ -4848,9 +4917,9 @@ export default function QuestionnaireOptionAVoterPanel(props: QuestionnaireOptio
                 }}
               >
                 <span className='simple-questionnaire-stepper-copy'>
-                  <strong>{submitInFlight ? "Submitting..." : showViewResultsFromQuestionNav ? "View results" : showSubmitFromQuestionNav ? submitFromQuestionNavLabel : "Next"}</strong>
+                  <strong>{submitInFlight ? t("voterSubmitting") : showViewResultsFromQuestionNav ? t("voterViewResults") : showSubmitFromQuestionNav ? submitFromQuestionNavLabel : t("actionNext")}</strong>
                   {showViewResultsFromQuestionNav || showSubmitFromQuestionNav ? null : (
-                    <small>{nextQuestionIndex >= 0 ? `Question ${nextQuestionIndex + 1}` : "No next question"}</small>
+                    <small>{nextQuestionIndex >= 0 ? `${t("voterQuestion")} ${nextQuestionIndex + 1}` : t("voterNoNextQuestion")}</small>
                   )}
                 </span>
               </UiButton>

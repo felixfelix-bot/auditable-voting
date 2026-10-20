@@ -1,5 +1,4 @@
 import type { QuestionnaireDefinition, QuestionnaireDefinitionReference } from "./questionnaireProtocol";
-import { canonicaliseQuestionnaireDefinitionText } from "./questionnaireProtocol";
 import { buildNamespacedLocalStorageKey as buildSimpleNamespacedLocalStorageKey } from "./appStorageNamespace";
 
 const QUESTIONNAIRE_DEFINITION_CACHE_KEY = "questionnaire:definitions:v1";
@@ -9,20 +8,6 @@ function storageKey() {
   return buildSimpleNamespacedLocalStorageKey(QUESTIONNAIRE_DEFINITION_CACHE_KEY);
 }
 
-/**
- * Definitions cached by an older build, or written before multi-language
- * support, store plain strings for `title`, `description`, question `prompt` and
- * option `label`. Upgrade every entry to the canonical multilingual shape as it
- * is read so callers never have to care which shape was written.
- */
-function canonicaliseCachedDefinitions(cache: Record<string, QuestionnaireDefinition>) {
-  const canonical: Record<string, QuestionnaireDefinition> = {};
-  for (const [id, definition] of Object.entries(cache)) {
-    canonical[id] = canonicaliseQuestionnaireDefinitionText(definition);
-  }
-  return canonical;
-}
-
 function readCache() {
   if (typeof window === "undefined") {
     return {};
@@ -30,7 +15,7 @@ function readCache() {
   try {
     const raw = window.localStorage.getItem(storageKey());
     return raw
-      ? canonicaliseCachedDefinitions(JSON.parse(raw) as Record<string, QuestionnaireDefinition>)
+      ? JSON.parse(raw) as Record<string, QuestionnaireDefinition>
       : {};
   } catch {
     return {};
@@ -49,10 +34,8 @@ function writeCache(cache: Record<string, QuestionnaireDefinition>) {
 }
 
 export function storeCachedQuestionnaireDefinition(definition: QuestionnaireDefinition) {
-  // Persist the canonical multilingual shape so a cached definition reads back
-  // with every locale it was created or parsed with, and a plain-string
-  // definition is stored as `{ en: "<text>" }`.
-  const canonicalDefinition = canonicaliseQuestionnaireDefinitionText(definition);
+  // Preserve the signed shape, including optional translations.
+  const canonicalDefinition = definition;
   const id = canonicalDefinition.questionnaireId.trim();
   if (!id) {
     return null;

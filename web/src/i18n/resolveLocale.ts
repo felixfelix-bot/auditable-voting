@@ -1,4 +1,4 @@
-import { type LocalisedText, type SupportedLocale, isLocalisedText } from "./types";
+import { type LocalisedText, type SupportedLocale } from "./types";
 
 /**
  * localStorage key for persisting the user's locale choice.
@@ -33,7 +33,7 @@ export function isSupportedLocale(value: string | null | undefined): value is Su
  * @returns Resolved string, or "" if no values exist
  */
 export function resolveLocalised(
-  text: LocalisedText | string,
+   text: unknown,
   locale: SupportedLocale,
 ): string {
   // Plain strings pass through unchanged.
@@ -41,27 +41,42 @@ export function resolveLocalised(
     return text;
   }
 
-  // Try the requested locale first.
-  const requested = text[locale];
-  if (requested && requested.length > 0) {
+  if (!text || typeof text !== "object" || Array.isArray(text)) return "";
+  const values = text as Record<string, unknown>;
+  // Only strings can reach React, including when a relay supplies bad data.
+  const requested = values[locale];
+  if (typeof requested === "string" && requested.length > 0) {
     return requested;
   }
 
   // Fallback: en (always required by type, but be defensive).
-  const en = text.en;
-  if (en && en.length > 0) {
+  const en = values.en;
+  if (typeof en === "string" && en.length > 0) {
     return en;
   }
 
   // Last resort: first non-empty value in priority order.
   for (const loc of LOCALE_PRIORITY) {
-    const val = text[loc];
-    if (val && val.length > 0) {
+    const val = values[loc];
+    if (typeof val === "string" && val.length > 0) {
       return val;
     }
   }
 
   return "";
+}
+
+/** Read optional translations without changing the signed definition. */
+export function translatedText(base: unknown, translations: unknown): LocalisedText | string {
+  const en = resolveLocalised(base, "en");
+  const source = translations === undefined ? base : translations;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return en;
+  const values = source as Record<string, unknown>;
+  return {
+    en,
+    ...(typeof values.fr === "string" ? { fr: values.fr } : {}),
+    ...(typeof values.ta === "string" ? { ta: values.ta } : {}),
+  };
 }
 
 /**

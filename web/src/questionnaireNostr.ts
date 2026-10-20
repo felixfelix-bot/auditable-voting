@@ -293,12 +293,7 @@ export async function publishQuestionnaireDefinition(input: {
   definition: QuestionnaireDefinition;
   relays?: string[];
 }) {
-  // Serialise the canonical multilingual shape. A definition that still carries
-  // plain English strings (for example a draft built before multi-language
-  // support) is published as `{ en: "<text>" }`, and any `fr`/`ta` translations
-  // already attached to a field are carried through unchanged. Older readers
-  // still receive a usable value because the parse path upgrades a bare string
-  // back to an English-only `LocalisedText`.
+  // Keep legacy English fields readable by older clients and the worker.
   const definition = canonicaliseQuestionnaireDefinitionText(input.definition);
   return publishEvent({
     nsec: input.coordinatorNsec,
@@ -763,7 +758,7 @@ export function parseQuestionnaireDefinitionEvent(
     // translations round-trip with every locale preserved. The transformation is
     // idempotent, so it is safe that `normalizeQuestionnaireDefinition` applies
     // the same canonicalisation again.
-    return normalizeQuestionnaireDefinition(canonicaliseQuestionnaireDefinitionText(parsed));
+    return normalizeQuestionnaireDefinition(parsed);
   } catch {
     return null;
   }

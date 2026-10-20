@@ -5,6 +5,7 @@ import { buildQuestionnaireResultSummary, deriveEffectiveQuestionnaireState, par
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
 import {
   calculateRankQuestionScores,
+  canonicaliseQuestionnaireDefinitionText,
   normaliseQuestionnaireBallotGroup,
   questionRequiredScope,
   normaliseRankedOptionIds,
@@ -22,7 +23,7 @@ import {
   type QuestionnaireVoterGroup,
   type QuestionCondition,
 } from "./questionnaireProtocol";
-import { resolveLocalised } from "./i18n/resolveLocale";
+import { resolveLocalised, translatedText } from "./i18n/resolveLocale";
 import { localisedFieldValue, toLocalisableText, trimLocalisableText, withLocalisedField } from "./i18n/localisedText";
 import { isLocalisedText } from "./i18n/types";
 import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
@@ -704,7 +705,16 @@ function normaliseStoredQuestions(input: unknown): QuestionnaireQuestionDraft[] 
         || isLocalisedText((entry as { prompt?: unknown }).prompt)
       )
     ))
-    .map((entry) => {
+    .map((storedEntry) => {
+      const entry = {
+        ...storedEntry,
+        prompt: translatedText(storedEntry.prompt, storedEntry.translations?.prompt),
+        ...((storedEntry.type === "multiple_choice" || storedEntry.type === "rank") ? {
+          options: Array.isArray(storedEntry.options)
+            ? storedEntry.options.map((option) => ({ ...option, label: translatedText(option.label, option.translations?.label) }))
+            : [],
+        } : {}),
+      } as QuestionnaireQuestionDraft;
       const withStoredGroup = (question: QuestionnaireQuestionDraft) => withNormalisedQuestionBallotGroup({
         ...question,
         ballotGroup: normaliseQuestionnaireBallotGroup(entry.requiredScope ?? entry.ballotGroup),
@@ -1540,7 +1550,7 @@ function buildDefinition(input: {
   const closeAfterMinutes = Number.isFinite(input.closeAfterMinutes)
     ? Math.max(1, Math.floor(input.closeAfterMinutes as number))
     : QUESTIONNAIRE_TIMER_DISABLED_CLOSE_MINUTES;
-  return {
+  return canonicaliseQuestionnaireDefinitionText({
     schemaVersion: 1,
     eventType: "questionnaire_definition",
     protocolVersion: QUESTIONNAIRE_PROTOCOL_VERSION_V2,
@@ -1564,7 +1574,7 @@ function buildDefinition(input: {
     ...(input.privateWorker ? { privateWorker: input.privateWorker } : {}),
     voterGroups: input.voterGroups ?? [],
     questions: alignQuestionBallotGroups(input.questions).map(withNormalisedQuestionBallotGroup),
-  };
+  });
 }
 
 function generalInvitePowDurationHint(difficulty: number) {
@@ -1601,6 +1611,7 @@ function comparableDefinitionDraftShape(definition: QuestionnaireDefinition) {
     questionnaireId: definition.questionnaireId,
     title: definition.title,
     description: definition.description ?? "",
+    translations: definition.translations,
     coordinatorPubkey: definition.coordinatorPubkey,
     coordinatorEncryptionPubkey: definition.coordinatorEncryptionPubkey,
     responseVisibility: definition.responseVisibility,
@@ -2138,13 +2149,17 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
       setPrivateQueueProgress(null);
       return;
     }
+    // `subscribePrivateQueueProgressDmsWithNsec` already returns the teardown
+    // function — `createSecretKeyGiftWrapSubscription` ends with `return close`.
+    // Reading `.close` off it yielded `undefined`, so the effect registered no
+    // cleanup and every re-run left the previous gift-wrap subscription open.
     return subscribePrivateQueueProgressDmsWithNsec({
       nsec: coordinatorNsec.trim(),
       workerNpub: pinnedWorker,
       electionId,
       relays: privateWorker.dmRelays,
       onProgress: setPrivateQueueProgress,
-    }).close;
+    });
   }, [activePublishedDefinition, activeWorkerDelegation, coordinatorNsec, questionnaireId]);
 
   const selectAvailableWorkerStatus = useCallback((snapshot: WorkerStatusSnapshot) => {
@@ -3117,8 +3132,8 @@ export default function QuestionnaireCoordinatorPanel(props: QuestionnaireCoordi
 
     const closeDurationSeconds = definitionCloseDurationSeconds(activePublishedDefinition);
     const hasCloseTimer = closeDurationSeconds > 0 && closeDurationSeconds < QUESTIONNAIRE_TIMER_DISABLED_CLOSE_SECONDS;
-    setTitle(toLocalisableText(activePublishedDefinition.title));
-    setDescription(toLocalisableText(activePublishedDefinition.description ?? ""));
+    setTitle(translatedText(activePublishedDefinition.title, activePublishedDefinition.translations?.title));
+    setDescription(translatedText(activePublishedDefinition.description ?? "", activePublishedDefinition.translations?.description));
     setCloseTimerEnabled(hasCloseTimer);
     setCloseAfterMinutes(hasCloseTimer ? String(Math.max(1, Math.round(closeDurationSeconds / 60))) : QUESTIONNAIRE_TIMER_FALLBACK_MINUTES);
     setCloseTimerUnit("minutes");

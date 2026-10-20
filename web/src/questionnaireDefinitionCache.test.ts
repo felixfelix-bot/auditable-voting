@@ -59,18 +59,18 @@ describe("questionnaireDefinitionCache multilingual canonicalisation", () => {
     window.localStorage.clear();
   });
 
-  it("stores a definition built with plain strings as English-only localised text", () => {
+  it("stores legacy definition strings unchanged", () => {
     storeCachedQuestionnaireDefinition(makeDefinition());
 
     const stored = cachedDefinitionsForTests().q_cache_2026;
-    expect(stored.title).toEqual({ en: "Term 1 feedback" });
-    expect(stored.description).toEqual({ en: "Tell us how term 1 went." });
-    expect(stored.questions[0].prompt).toEqual({ en: "Did you attend?" });
+    expect(stored.title).toEqual("Term 1 feedback");
+    expect(stored.description).toEqual("Tell us how term 1 went.");
+    expect(stored.questions[0].prompt).toEqual("Did you attend?");
     expect((stored.questions[1] as { options: { label: unknown }[] }).options.map((option) => option.label))
-      .toEqual([{ en: "Morning" }, { en: "Afternoon" }]);
+      .toEqual(["Morning", "Afternoon"]);
   });
 
-  it("reads a cache entry written by a pre-multi-language build as English-only localised text", () => {
+  it("reads a legacy cache entry without rewriting its signed text", () => {
     window.localStorage.setItem(
       buildNamespacedLocalStorageKey("questionnaire:definitions:v1"),
       JSON.stringify({ q_cache_2026: makeDefinition() }),
@@ -79,11 +79,11 @@ describe("questionnaireDefinitionCache multilingual canonicalisation", () => {
     const cached = readCachedQuestionnaireDefinition("q_cache_2026");
 
     expect(cached).not.toBeNull();
-    expect(cached?.title).toEqual({ en: "Term 1 feedback" });
-    expect(cached?.description).toEqual({ en: "Tell us how term 1 went." });
-    expect(cached?.questions[0].prompt).toEqual({ en: "Did you attend?" });
+    expect(cached?.title).toEqual("Term 1 feedback");
+    expect(cached?.description).toEqual("Tell us how term 1 went.");
+    expect(cached?.questions[0].prompt).toEqual("Did you attend?");
     expect((cached?.questions[1] as { options: { label: unknown }[] }).options[0].label)
-      .toEqual({ en: "Morning" });
+      .toEqual("Morning");
   });
 
   it("round-trips a localised definition through the cache preserving every language", () => {
@@ -138,6 +138,6 @@ describe("questionnaireDefinitionCache multilingual canonicalisation", () => {
 
     const cached = readCachedQuestionnaireDefinition("q_cache_2026");
     expect(cached?.createdAt).toBe(1712530000);
-    expect(cached?.title).toEqual({ en: "Term 1 feedback" });
+    expect(cached?.title).toEqual("Term 1 feedback");
   });
 });

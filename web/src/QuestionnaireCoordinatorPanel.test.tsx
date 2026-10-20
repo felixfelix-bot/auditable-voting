@@ -121,6 +121,14 @@ function readStoredDraft() {
 }
 
 describe("QuestionnaireCoordinatorPanel multilingual creation UI", () => {
+  it.each([undefined, "invalid"])("recovers a stored rank draft with malformed options: %s", (options) => {
+    window.localStorage.setItem(buildSimpleNamespacedLocalStorageKey("coordinator.questionnaire-draft-data.v1"), JSON.stringify({
+      title: "Recovered draft", questions: [{ questionId: "q1", type: "rank", prompt: "Rank choices", required: false, minimumRanked: 0, options }],
+    }));
+    render(<QuestionnaireCoordinatorPanel view='build' coordinatorNpub='npub1organiser' />);
+    expect((screen.getByLabelText("Question 1 prompt") as HTMLInputElement).value).toBe("Rank choices");
+  });
+
   it("renders a Translations toggle for the title field", () => {
     render(<QuestionnaireCoordinatorPanel view='build' coordinatorNpub='npub1organiser' />);
 
@@ -142,7 +150,7 @@ describe("QuestionnaireCoordinatorPanel multilingual creation UI", () => {
     expect(screen.getByLabelText("Title (Tamil)")).toBeTruthy();
   });
 
-  it("produces a localised title in the published definition", async () => {
+  it("stores a localised title in the draft", async () => {
     const coordinatorSecret = generateSecretKey();
     const coordinatorNpub = nip19.npubEncode(getPublicKey(coordinatorSecret));
     const coordinatorNsec = nip19.nsecEncode(coordinatorSecret);
@@ -176,7 +184,7 @@ describe("QuestionnaireCoordinatorPanel multilingual creation UI", () => {
     });
   });
 
-  it("produces a localised question prompt in the published definition", async () => {
+  it("stores a localised question prompt in the draft", async () => {
     const coordinatorSecret = generateSecretKey();
     const coordinatorNpub = nip19.npubEncode(getPublicKey(coordinatorSecret));
     const coordinatorNsec = nip19.nsecEncode(coordinatorSecret);

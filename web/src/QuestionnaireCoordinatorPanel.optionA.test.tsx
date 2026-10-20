@@ -56,7 +56,6 @@ vi.mock("./questionnaireOptionABlindDm", async () => {
     ...actual,
     fetchOptionAWorkerStatusDmsWithNsec: vi.fn().mockResolvedValue([]),
     subscribePrivateQueueProgressDmsWithNsec: vi.fn().mockReturnValue({ close: vi.fn() }),
-    subscribePrivateQueueProgressDmsWithNsec: vi.fn().mockReturnValue({ close: vi.fn() }),
     publishOptionAWorkerDelegationDm: vi.fn().mockResolvedValue({
       eventId: "mock-worker-delegation-dm",
       successes: 1,
@@ -130,6 +129,7 @@ function makeDefinitionEvent(input: {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   sharedNostrPoolMocks.querySync.mockResolvedValue([]);
   sharedNostrPoolMocks.subscribeMany.mockReturnValue({
     close: vi.fn(),
@@ -1223,6 +1223,8 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
 
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "New delegated questionnaire" } });
     fireEvent.change(screen.getByPlaceholderText("Question prompt"), { target: { value: "Proceed?" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Translations" })[0]);
+    fireEvent.change(screen.getByLabelText("Title (French)"), { target: { value: "Nouveau questionnaire" } });
     fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "delegated_worker" } });
     fireEvent.change(screen.getByLabelText("Audit proxy npub"), { target: { value: workerNpub } });
     const publishButton = screen.getByRole("button", { name: "Go Live" });
@@ -1232,6 +1234,10 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
     await waitFor(() => expect(publishOptionAWorkerElectionConfigDm).toHaveBeenCalledTimes(1));
     const definition = questionnaireNostrMocks.publishQuestionnaireDefinition.mock.calls[0]?.[0]?.definition;
     const snapshot = vi.mocked(publishOptionAWorkerElectionConfigDm).mock.calls[0]?.[0]?.snapshot;
+    expect(definition.title).toBe("New delegated questionnaire");
+    expect(definition.translations?.title).toEqual({ en: "New delegated questionnaire", fr: "Nouveau questionnaire" });
+    expect(snapshot?.definition).toEqual(definition);
+    expect(snapshot?.definitionReference?.definitionHash).toBe(questionnaireDefinitionHash(definition));
     expect(vi.mocked(publishOptionAWorkerElectionConfigDm).mock.calls[0]?.[0]?.recipientNpub).toBe(workerNpub);
     expect(definition?.blindSigningPublicKey?.keyId).toBeTruthy();
     expect(snapshot?.blindSigningPrivateKey?.keyId).toBe(definition?.blindSigningPublicKey?.keyId);
@@ -1267,7 +1273,8 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Go Live" }));
 
-    await waitFor(() => expect(questionnaireNostrMocks.publishQuestionnaireDefinition).toHaveBeenCalled());
+    // Publishing creates a real RSA key, which can exceed the default 1s wait.
+    await waitFor(() => expect(questionnaireNostrMocks.publishQuestionnaireDefinition).toHaveBeenCalled(), { timeout: 10_000 });
     const definition = questionnaireNostrMocks.publishQuestionnaireDefinition.mock.calls[0]?.[0]?.definition;
     expect(definition?.privateWorker).toEqual({
       npub: workerNpub,
@@ -1600,22 +1607,7 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
       ...makeDefinition({ questionnaireId, title: "Automatic proxy config", coordinatorNpub }),
       blindSigningPublicKey: toQuestionnaireBlindPublicKey(blindKey),
     };
-    // F1-T7 canonicalises the localisable text of every definition that enters
-    // the app, so the definition the panel syncs to the audit proxy carries
-    // `LocalisedText` for `title`, `description` and question `prompt` (and for
-    // option `label` on choice questions) instead of the bare strings this
-    // fixture is written with. The canonical shape is pinned explicitly here so
-    // the assertion still fails if the text fields, or anything else in the
-    // definition, stop reaching the worker config.
-    const canonicalDefinition = {
-      ...definition,
-      title: { en: "Automatic proxy config" },
-      description: { en: "" },
-      questions: definition.questions.map((question) => ({
-        ...question,
-        prompt: { en: question.prompt },
-      })),
-    };
+    // The worker must receive the published definition without text rewriting.
     const election = {
       electionId: questionnaireId,
       title: definition.title,
@@ -1705,7 +1697,7 @@ describe("QuestionnaireCoordinatorPanel option_a mode", () => {
     expect(vi.mocked(publishOptionAWorkerElectionConfigDm).mock.calls[0]?.[0]?.snapshot).toMatchObject({
       delegationId: activeDelegation.delegationId,
       blindSigningPrivateKey: { keyId: blindKey.keyId },
-      definition: canonicalDefinition,
+      definition,
       whitelistNpubs: [workerNpub],
       proxyVoterNpubs: [workerNpub],
       ballotGroupsByNpub: { [workerNpub]: "north" },

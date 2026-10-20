@@ -22,6 +22,9 @@ export function isLocalisedText(value: unknown): value is LocalisedText {
   return (
     typeof value === "object" &&
     value !== null &&
-    typeof (value as LocalisedText).en === "string"
+    !Array.isArray(value) &&
+    typeof (value as LocalisedText).en === "string" &&
+    ((value as LocalisedText).fr === undefined || typeof (value as LocalisedText).fr === "string") &&
+    ((value as LocalisedText).ta === undefined || typeof (value as LocalisedText).ta === "string")
   );
 }

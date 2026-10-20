@@ -40,6 +40,7 @@ export type LocalisableText = string | LocalisedText;
 export type QuestionnaireQuestionBase = {
   questionId: string;
   prompt: LocalisableText;
+  translations?: { prompt?: LocalisedText };
   required: boolean;
   ballotSlot?: QuestionnaireBallotSlot | null;
   requiredScope?: string | null;
@@ -141,6 +142,7 @@ export type QuestionnaireYesNoQuestion = QuestionnaireQuestionBase & {
 export type QuestionnaireMultipleChoiceOption = {
   optionId: string;
   label: LocalisableText;
+  translations?: { label?: LocalisedText };
 };
 
 export type QuestionnaireMultipleChoiceQuestion = QuestionnaireQuestionBase & {
@@ -176,6 +178,7 @@ export type QuestionnaireDefinition = {
   questionnaireId: string;
   title: LocalisableText;
   description?: LocalisableText;
+  translations?: { title?: LocalisedText; description?: LocalisedText };
   createdAt: number;
   openAt: number;
   closeAt: number;
@@ -742,9 +745,11 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
           errors.push(`show_if_forward_reference:${question.questionId}:${depId}`);
         } else {
           const depQuestion = input.questions[depIndex];
-          const requiredAnswerType = condition.requiredAnswer.answerType;
-          if (requiredAnswerType !== depQuestion.type) {
+          const requiredAnswerType = condition.requiredAnswer?.answerType;
+          if ((requiredAnswerType !== "yes_no" && requiredAnswerType !== "multiple_choice") || requiredAnswerType !== depQuestion.type) {
             errors.push(`show_if_answer_type_mismatch:${question.questionId}:${depId}`);
+          } else if (requiredAnswerType === "yes_no" && typeof condition.requiredAnswer.value !== "boolean") {
+            errors.push(`show_if_invalid_value:${question.questionId}:${depId}`);
           } else if (requiredAnswerType === "multiple_choice") {
             const depOptions = depQuestion.type === "multiple_choice" ? depQuestion.options : [];
             const validOptionIds = new Set(depOptions.map((opt) => opt.optionId));
@@ -766,76 +771,40 @@ export function validateQuestionnaireDefinition(input: QuestionnaireDefinition):
   return { valid: errors.length === 0, errors };
 }
 
-/**
- * Canonicalise a single `LocalisableText` value so every consumer sees the
- * multilingual shape:
- * - a plain string is upgraded to an English-only `LocalisedText` (`{ en }`),
- *   which is how definitions published before multi-language support are read;
- * - an existing `LocalisedText` object keeps every locale it carries (`en`, and
- *   any `fr`/`ta` translations);
- * - anything else is returned untouched so malformed payloads stay visible to
- *   `validateQuestionnaireDefinition` instead of being silently rewritten.
- */
-export function canonicaliseLocalisableText(value: unknown): unknown {
-  if (typeof value === "string") {
-    return { en: value };
-  }
-  if (isLocalisedText(value)) {
-    return { ...value, en: value.en };
-  }
-  return value;
-}
-
-function canonicaliseQuestionText(question: unknown): unknown {
-  if (!question || typeof question !== "object" || Array.isArray(question)) {
-    return question;
-  }
-  const next: Record<string, unknown> = { ...question };
-  if ("prompt" in next) {
-    next.prompt = canonicaliseLocalisableText(next.prompt);
-  }
-  if (Array.isArray(next.options)) {
-    next.options = next.options.map((option) => {
-      if (!option || typeof option !== "object" || Array.isArray(option)) {
-        return option;
-      }
-      const optionRecord: Record<string, unknown> = { ...option };
-      if ("label" in optionRecord) {
-        optionRecord.label = canonicaliseLocalisableText(optionRecord.label);
-      }
-      return optionRecord;
-    });
-  }
-  return next;
-}
-
-/**
- * Canonicalise the localisable text fields of a questionnaire definition:
- * `title`, `description`, every question `prompt` and every option `label`.
- *
- * Nostr definition events written before multi-language support carry plain
- * strings in these fields.  Upgrading them to `LocalisedText` on the way in
- * means downstream code always sees the multilingual shape, while definitions
- * that already carry `LocalisedText` round-trip with all languages preserved.
- *
- * The transformation is idempotent and does not add, remove or reorder any
- * other field, so it is safe to apply on both the publish and the parse path.
+/** Convert editor text to legacy English strings plus optional translations.
+ * Only use this when building/publishing a new definition, never when hashing
+ * or parsing a signed event.
  */
 export function canonicaliseQuestionnaireDefinitionText<T>(value: T): T {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return value;
   }
-  const next: Record<string, unknown> = { ...(value as Record<string, unknown>) };
-  if ("title" in next) {
-    next.title = canonicaliseLocalisableText(next.title);
-  }
-  if (next.description !== undefined && next.description !== null) {
-    next.description = canonicaliseLocalisableText(next.description);
-  }
+  const next = serialiseTextFields(value as Record<string, unknown>, ["title", "description"]);
   if (Array.isArray(next.questions)) {
-    next.questions = next.questions.map(canonicaliseQuestionText);
+    next.questions = next.questions.map((question) => {
+      const q = serialiseTextFields(question, ["prompt"]);
+      if (Array.isArray(q.options)) q.options = q.options.map((option) => serialiseTextFields(option, ["label"]));
+      return q;
+    });
   }
   return next as T;
+}
+
+function serialiseTextFields(value: Record<string, unknown>, fields: string[]) {
+  const next = { ...value };
+  for (const field of fields) {
+    const text = next[field];
+    if (!isLocalisedText(text)) continue;
+    next[field] = text.en;
+    const translations = { ...(next.translations as Record<string, unknown>) };
+    delete translations[field];
+    if (text.fr || text.ta) {
+      translations[field] = { ...text };
+    }
+    if (Object.keys(translations).length) next.translations = translations;
+    else delete next.translations;
+  }
+  return next;
 }
 
 export function normalizeQuestionnaireDefinition(
@@ -857,11 +826,7 @@ export function normalizeQuestionnaireDefinition(
     protocolVersion: input.protocolVersion ?? QUESTIONNAIRE_PROTOCOL_VERSION_V1,
     ...(questionnaireRelays ? { questionnaireRelays } : { questionnaireRelays: undefined }),
   };
-  // Every definition that enters the app (parsed from a Nostr event, read from
-  // the local cache or rebuilt in memory) carries canonical `LocalisedText`
-  // text fields, so a definition published before multi-language support is
-  // read as English-only text rather than as a bare string.
-  return canonicaliseQuestionnaireDefinitionText(normalized);
+  return normalized;
 }
 
 export function validateQuestionnaireResponsePayload(input: {
@@ -870,6 +835,8 @@ export function validateQuestionnaireResponsePayload(input: {
 }): ValidationResult {
   const errors: string[] = [];
   const { definition, payload } = input;
+  const conditionErrors = validateQuestionnaireDefinition(definition).errors.filter(error => error.startsWith("show_if_"));
+  if (conditionErrors.length > 0) return { valid: false, errors: conditionErrors };
   if (payload.questionnaireId !== definition.questionnaireId) {
     errors.push("questionnaire_id_mismatch");
   }
@@ -902,7 +869,7 @@ export function validateQuestionnaireResponsePayload(input: {
     }
 
     if (question.type === "yes_no") {
-      if (answer.answerType !== "yes_no") {
+      if (answer.answerType !== "yes_no" || typeof answer.value !== "boolean") {
         errors.push(`invalid_answer_type:${answer.questionId}`);
       }
       continue;
@@ -914,6 +881,9 @@ export function validateQuestionnaireResponsePayload(input: {
         continue;
       }
       const selected = Array.isArray(answer.selectedOptionIds) ? answer.selectedOptionIds : [];
+      if (!Array.isArray(answer.selectedOptionIds) || !selected.every(id => typeof id === "string")) {
+        errors.push(`invalid_selection:${answer.questionId}`);
+      }
       if (!question.multiSelect && selected.length !== 1) {
         errors.push(`invalid_selection_count:${answer.questionId}`);
       }
@@ -932,6 +902,9 @@ export function validateQuestionnaireResponsePayload(input: {
         continue;
       }
       const ranked = Array.isArray(answer.rankedOptionIds) ? answer.rankedOptionIds : [];
+      if (!Array.isArray(answer.rankedOptionIds)) {
+        errors.push(`invalid_selection:${answer.questionId}`);
+      }
       const minimumRanked = clampRankMinimum(question);
       if (ranked.length < minimumRanked) {
         errors.push(`rank_selection_count:${answer.questionId}`);
@@ -958,7 +931,9 @@ export function validateQuestionnaireResponsePayload(input: {
       errors.push(`invalid_answer_type:${answer.questionId}`);
       continue;
     }
-    if (answer.text.length > question.maxLength) {
+    if (typeof answer.text !== "string") {
+      errors.push(`invalid_answer_type:${answer.questionId}`);
+    } else if (answer.text.length > question.maxLength) {
       errors.push(`free_text_too_long:${answer.questionId}`);
     }
   }

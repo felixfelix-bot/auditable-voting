@@ -188,6 +188,7 @@ import {
   isQuestionnaireInviteCodeHash,
   normaliseQuestionnaireInviteCode,
 } from "./questionnaireInviteCode";
+import { hashPaperBallotAdmissionKey, redeemPaperBallotAdmission, sanitisePaperBallotAdmissions, isPaperBallotAdmissionEntry, type PaperBallotAdmissionEntry } from "./paperBallotAdmission";
 
 const OPTION_A_COORDINATOR_DM_LOOKBACK_SECONDS = 24 * 60 * 60;
 const OPTION_A_COORDINATOR_SIGNER_DM_LIMIT = 320;
@@ -1131,6 +1132,7 @@ export class QuestionnaireOptionAVoterRuntime {
   private bearerInviteCode: string | null = null;
   private privateInviteCredentialsPerVoter: QuestionnaireCredentialsPerVoter | null = null;
   private privateInviteBallotGroup: string | null = null;
+  private paperBallotAdmissionKey: string | null = null;
 
   constructor(
     private readonly signer: SignerService,
@@ -1180,6 +1182,19 @@ export class QuestionnaireOptionAVoterRuntime {
       lastUpdatedAt: nowIso(),
     };
     saveVoterState({ voterNpub: this.state.invitedNpub, state: this.state });
+  }
+
+  async requestPaperBallotAdmission(input: { code: string; masterlistNumber: string }) {
+    const registryKey = await hashPaperBallotAdmissionKey({
+      electionId: this.electionId,
+      code: input.code,
+      masterlistNumber: input.masterlistNumber,
+    });
+    if (!registryKey) {
+      throw new OptionARuntimeError("invalid_submission", "Enter the ten-character paper code and your master-list number.");
+    }
+    this.paperBallotAdmissionKey = registryKey;
+    return this.requestBlindBallot({ forceResend: true });
   }
 
   getFlags() {
@@ -2737,6 +2752,7 @@ export class QuestionnaireOptionAVoterRuntime {
         cachedDefinition,
         summary,
         inviteCodeHash,
+        paperBallotAdmissionKey: this.paperBallotAdmissionKey ?? "",
         forceResend: options?.forceResend,
         minRetryMs: options?.minRetryMs,
         onProofOfWorkProgress: options?.onProofOfWorkProgress,
@@ -2778,6 +2794,7 @@ export class QuestionnaireOptionAVoterRuntime {
         clientNonce: makeId("nonce"),
         createdAt: nowIso(),
         inviteCodeHash: inviteCodeHash || null,
+        paperBallotAdmissionKey: this.paperBallotAdmissionKey,
         ballotScope,
       };
       const created = reduceVoterEvent(next, { type: "BLIND_REQUEST_CREATED", request });
@@ -2815,8 +2832,12 @@ export class QuestionnaireOptionAVoterRuntime {
         blindRequest: request,
       };
     }
+    if (request && this.paperBallotAdmissionKey && request.paperBallotAdmissionKey !== this.paperBallotAdmissionKey) {
+      request = { ...request, paperBallotAdmissionKey: this.paperBallotAdmissionKey };
+      next = { ...next, blindRequest: request };
+    }
     const generalInvitePowDifficulty = cachedDefinition?.generalInvitePowDifficulty ?? 0;
-    if (request && !request.inviteCodeHash && generalInvitePowDifficulty > 0 && !verifyGeneralInvitePow({
+    if (request && !request.inviteCodeHash && !request.paperBallotAdmissionKey && generalInvitePowDifficulty > 0 && !verifyGeneralInvitePow({
       electionId: request.electionId,
       requestId: request.requestId,
       invitedNpub: request.invitedNpub,
@@ -2842,6 +2863,7 @@ export class QuestionnaireOptionAVoterRuntime {
       next = { ...next, blindRequest: request };
     }
 
+    next = { ...next, blindRequests: { ...next.blindRequests, [ballotScopeKey(request.ballotScope)]: request } };
     this.state = next;
     if (!this.state.coordinatorNpub?.trim()) {
       const summaryCoordinatorNpub = summary?.coordinatorNpub?.trim()
@@ -2945,6 +2967,7 @@ export class QuestionnaireOptionAVoterRuntime {
     cachedDefinition: QuestionnaireDefinition;
     summary: ElectionSummary | null;
     inviteCodeHash: string;
+    paperBallotAdmissionKey: string;
     forceResend?: boolean;
     minRetryMs?: number;
     onProofOfWorkProgress?: (attempts: number) => void;
@@ -3045,6 +3068,7 @@ export class QuestionnaireOptionAVoterRuntime {
           clientNonce: makeId("nonce"),
           createdAt: nowIso(),
           inviteCodeHash: input.inviteCodeHash || null,
+          paperBallotAdmissionKey: input.paperBallotAdmissionKey || null,
           ballotScope: scope,
         };
         tokenSecretEntry = {
@@ -3060,8 +3084,14 @@ export class QuestionnaireOptionAVoterRuntime {
           inviteCodeHash: input.inviteCodeHash,
         };
       }
+      if (input.paperBallotAdmissionKey && request.paperBallotAdmissionKey !== input.paperBallotAdmissionKey) {
+        request = {
+          ...request,
+          paperBallotAdmissionKey: input.paperBallotAdmissionKey,
+        };
+      }
       const generalInvitePowDifficulty = input.cachedDefinition.generalInvitePowDifficulty ?? 0;
-      if (!request.inviteCodeHash && generalInvitePowDifficulty > 0 && !verifyGeneralInvitePow({
+      if (!request.inviteCodeHash && !request.paperBallotAdmissionKey && generalInvitePowDifficulty > 0 && !verifyGeneralInvitePow({
         electionId: request.electionId,
         requestId: request.requestId,
         invitedNpub: request.invitedNpub,
@@ -3115,7 +3145,9 @@ export class QuestionnaireOptionAVoterRuntime {
         ...(next.blindTokenSecrets ?? {}),
         [scopeKey]: tokenSecretEntry,
       };
-      next.blindRequest = next.blindRequest ?? request;
+      if (!next.blindRequest || next.blindRequest.requestId === request.requestId) {
+        next.blindRequest = request;
+      }
       next.blindTokenSecret = next.blindTokenSecret ?? tokenSecretEntry;
       if (shouldPublish) {
         requestsToPublish.push(request);
@@ -4435,7 +4467,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
       schemaVersion: 1,
       electionId: state.election.electionId,
       coordinatorNpub: state.election.coordinatorNpub,
-      state: stateWithoutPrivateKey,
+      state: { ...stateWithoutPrivateKey, paperBallotAdmissions: sanitisePaperBallotAdmissions(state.paperBallotAdmissions) },
       pendingAuthorizationsByNpub,
       pendingParticipantStatusesByNpub,
       lastUpdatedAt: state.lastUpdatedAt,
@@ -4533,6 +4565,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
       || Object.keys(snapshot.state.receivedSubmissions).length > Object.keys(this.state.receivedSubmissions).length
       || Object.keys(snapshot.state.acceptanceResults).length > Object.keys(this.state.acceptanceResults).length
       || Object.keys(snapshot.state.bearerInviteCodes ?? {}).length > Object.keys(this.state.bearerInviteCodes ?? {}).length
+      || Object.keys(snapshot.state.paperBallotAdmissions ?? {}).length > Object.keys(this.state.paperBallotAdmissions ?? {}).length
       || Object.keys(snapshot.pendingAuthorizationsByNpub ?? {}).length > Object.keys(this.pendingAuthorizationsByNpub).length
       || Object.keys(snapshot.pendingParticipantStatusesByNpub ?? {}).length > Object.keys(this.pendingParticipantStatusesByNpub).length
     );
@@ -4554,6 +4587,13 @@ export class QuestionnaireOptionACoordinatorRuntime {
         bearerInviteCodes: {
           ...(this.state.bearerInviteCodes ?? {}),
           ...(snapshot.state.bearerInviteCodes ?? {}),
+        },
+        paperBallotAdmissions: {
+          ...sanitisePaperBallotAdmissions(this.state.paperBallotAdmissions),
+          ...Object.fromEntries(Object.entries(sanitisePaperBallotAdmissions(snapshot.state.paperBallotAdmissions)).filter(([registryKey, recovered]) => {
+            const local = this.state?.paperBallotAdmissions?.[registryKey];
+            return !local || local.state === "available" || recovered.state !== "available";
+          })),
         },
         pendingBlindRequests: {
           ...this.state.pendingBlindRequests,
@@ -5210,6 +5250,96 @@ export class QuestionnaireOptionACoordinatorRuntime {
     return entry;
   }
 
+  addPaperBallotAdmission(entry: PaperBallotAdmissionEntry) {
+    if (!this.state || !this.coordinatorNpub) {
+      throw new OptionARuntimeError("not_logged_in", "Organiser login is required.");
+    }
+    const registryKey = entry.registryKey.trim().toLowerCase();
+    if (!isPaperBallotAdmissionEntry(entry) || entry.electionId !== this.electionId) {
+      throw new OptionARuntimeError("invalid_submission", "Paper ballot admission is invalid.");
+    }
+    const existing = this.state.paperBallotAdmissions?.[registryKey];
+    if (existing) return existing;
+    const next: PaperBallotAdmissionEntry = {
+      electionId: this.electionId,
+      registryKey,
+      expiresAt: entry.expiresAt,
+      state: entry.state,
+      redeemedAt: entry.redeemedAt ?? null,
+      redeemedRequestId: entry.redeemedRequestId ?? null,
+      redeemedIssuanceId: entry.redeemedIssuanceId ?? null,
+      ...(entry.state === "redeemed" && entry.redeemedNpub ? { redeemedNpub: entry.redeemedNpub } : {}),
+    };
+    this.state = {
+      ...this.state,
+      paperBallotAdmissions: { ...sanitisePaperBallotAdmissions(this.state.paperBallotAdmissions), [registryKey]: next },
+      lastUpdatedAt: nowIso(),
+    };
+    this.persistCoordinatorState("paper_ballot_admission_added", { force: true });
+    return next;
+  }
+
+  revokePaperBallotAdmission(registryKey: string) {
+    if (!this.state || !this.coordinatorNpub) {
+      throw new OptionARuntimeError("not_logged_in", "Organiser login is required.");
+    }
+    const key = registryKey.trim().toLowerCase();
+    const entry = this.state.paperBallotAdmissions?.[key];
+    if (!entry || entry.state !== "available") {
+      return entry ?? null;
+    }
+    const next = { ...entry, state: "revoked" as const };
+    this.state = {
+      ...this.state,
+      paperBallotAdmissions: { ...(this.state.paperBallotAdmissions ?? {}), [key]: next },
+      lastUpdatedAt: nowIso(),
+    };
+    this.persistCoordinatorState("paper_ballot_admission_revoked", { force: true });
+    return next;
+  }
+
+  private redeemPaperBallotAdmissionForRequest(state: CoordinatorElectionState, request: BlindBallotRequest) {
+    const registryKey = request.paperBallotAdmissionKey?.trim().toLowerCase() ?? "";
+    if (!registryKey) {
+      return { state, admitted: false };
+    }
+    let entry = state.paperBallotAdmissions?.[registryKey];
+    // Recover old redeemed records only from issuer-retained binding evidence,
+    // never from the identity or request ID supplied by a new claimant.
+    if (entry?.state === "redeemed" && !entry.redeemedNpub && entry.redeemedRequestId) {
+      const bound = state.issuedBlindResponses[entry.redeemedRequestId]
+        ?? state.pendingBlindRequests[entry.redeemedRequestId];
+      if (bound?.electionId === this.electionId) {
+        entry = { ...entry, redeemedNpub: bound.invitedNpub };
+      }
+    }
+    const result = redeemPaperBallotAdmission(entry, {
+      electionId: this.electionId,
+      registryKey,
+      requestId: request.requestId,
+      invitedNpub: request.invitedNpub,
+    });
+    if (!result.ok) {
+      return { state, admitted: false };
+    }
+    const existingWhitelistEntry = state.whitelist[request.invitedNpub] ?? null;
+    const whitelistEntry: WhitelistEntry = existingWhitelistEntry ?? {
+      electionId: this.electionId,
+      invitedNpub: request.invitedNpub,
+      addedAt: result.entry.redeemedAt ?? nowIso(),
+      claimState: "whitelisted",
+    };
+    return {
+      admitted: true,
+      state: {
+        ...state,
+        whitelist: { ...state.whitelist, [request.invitedNpub]: whitelistEntry },
+        paperBallotAdmissions: { ...(state.paperBallotAdmissions ?? {}), [registryKey]: result.entry },
+        lastUpdatedAt: nowIso(),
+      },
+    };
+  }
+
   revokeBearerInviteCode(codeHash: string) {
     if (!this.state || !this.coordinatorNpub) {
       throw new OptionARuntimeError("not_logged_in", "Organiser login is required.");
@@ -5483,6 +5613,9 @@ export class QuestionnaireOptionACoordinatorRuntime {
     state: CoordinatorElectionState,
     request: BlindBallotRequest,
   ): string | null | undefined {
+    if (request.paperBallotAdmissionKey) {
+      return normaliseQuestionnaireBallotGroup(state.whitelist[request.invitedNpub]?.ballotGroup);
+    }
     const codeHash = (request.inviteCodeHash ?? "").trim().toLowerCase();
     if (isQuestionnaireInviteCodeHash(codeHash)) {
       const codeEntry = state.bearerInviteCodes?.[codeHash];
@@ -5496,7 +5629,7 @@ export class QuestionnaireOptionACoordinatorRuntime {
 
   private hasRequiredGeneralInvitePow(request: BlindBallotRequest) {
     const difficulty = readCachedQuestionnaireDefinition(this.electionId)?.generalInvitePowDifficulty ?? 0;
-    return Boolean(request.inviteCodeHash) || difficulty === 0 || verifyGeneralInvitePow({
+    return Boolean(request.inviteCodeHash || request.paperBallotAdmissionKey) || difficulty === 0 || verifyGeneralInvitePow({
       electionId: request.electionId,
       requestId: request.requestId,
       invitedNpub: request.invitedNpub,
@@ -6171,6 +6304,20 @@ export class QuestionnaireOptionACoordinatorRuntime {
         dequeueBlindRequest(request.requestId);
         continue;
       }
+      const now = Math.floor(Date.now() / 1000);
+      if (
+        next.election.state === "closed"
+        || next.election.state === "counted"
+        || (cachedDefinition && (now < cachedDefinition.openAt || now >= cachedDefinition.closeAt))
+      ) {
+        optionAFlowLog("coordinator", "blind_request_rejected_questionnaire_not_open", {
+          electionId: this.electionId,
+          requestId: request.requestId,
+          invitedNpub: request.invitedNpub,
+        });
+        dequeueBlindRequest(request.requestId);
+        continue;
+      }
       const configuredBallotGroup = this.configuredBallotGroupForRequest(next, request);
       if (configuredBallotGroup !== undefined) {
         const expectedScopes = allowedScopesForRequiredScope(configuredBallotGroup);
@@ -6190,6 +6337,56 @@ export class QuestionnaireOptionACoordinatorRuntime {
           continue;
         }
       }
+      if (!next.whitelist[request.invitedNpub] && ballotScopeCredentialIndex(request.ballotScope) > 1) {
+        optionAFlowLog("coordinator", "blind_request_rejected_proxy_not_enabled", {
+          electionId: this.electionId,
+          requestId: request.requestId,
+          invitedNpub: request.invitedNpub,
+          scope: ballotScopeKey(request.ballotScope),
+        });
+        dequeueBlindRequest(request.requestId);
+        continue;
+      }
+      if (request.paperBallotAdmissionKey) {
+        const preflightWhitelistEntry = next.whitelist[request.invitedNpub] ?? {
+          electionId: this.electionId,
+          invitedNpub: request.invitedNpub,
+          addedAt: nowIso(),
+          claimState: "whitelisted" as const,
+        };
+        const preflightClaim = reduceCoordinatorEvent({
+          ...next,
+          whitelist: { ...next.whitelist, [request.invitedNpub]: preflightWhitelistEntry },
+        }, {
+          type: "LOGIN_VERIFIED",
+          electionId: this.electionId,
+          invitedNpub: request.invitedNpub,
+        });
+        const preflightRequest = preflightClaim.ok
+          ? reduceCoordinatorEvent(preflightClaim.state, { type: "BLIND_REQUEST_RECEIVED", request })
+          : preflightClaim;
+        if (!preflightRequest.ok) {
+          optionAFlowLog("coordinator", "blind_request_rejected_before_paper_admission", {
+            electionId: this.electionId,
+            requestId: request.requestId,
+            invitedNpub: request.invitedNpub,
+            reason: preflightRequest.error,
+          });
+          dequeueBlindRequest(request.requestId);
+          continue;
+        }
+      }
+      const paperAdmission = this.redeemPaperBallotAdmissionForRequest(next, request);
+      if (request.paperBallotAdmissionKey && !paperAdmission.admitted) {
+        optionAFlowLog("coordinator", "blind_request_rejected_paper_admission_unavailable", {
+          electionId: this.electionId,
+          requestId: request.requestId,
+          invitedNpub: request.invitedNpub,
+        });
+        dequeueBlindRequest(request.requestId);
+        continue;
+      }
+      next = paperAdmission.state;
       next = this.redeemBearerInviteCodeForRequest(next, request);
       const claimed = reduceCoordinatorEvent(next, {
         type: "LOGIN_VERIFIED",
@@ -6305,7 +6502,19 @@ export class QuestionnaireOptionACoordinatorRuntime {
         requestId: request.requestId,
         issuanceId: issuance.issuanceId,
       });
-      next = issued.state;
+      const paperAdmissionKey = request.paperBallotAdmissionKey?.trim().toLowerCase();
+      next = paperAdmissionKey && issued.state.paperBallotAdmissions?.[paperAdmissionKey]
+        ? {
+          ...issued.state,
+          paperBallotAdmissions: {
+            ...issued.state.paperBallotAdmissions,
+            [paperAdmissionKey]: {
+              ...issued.state.paperBallotAdmissions[paperAdmissionKey],
+              redeemedIssuanceId: issuance.issuanceId,
+            },
+          },
+        }
+        : issued.state;
       storeBlindIssuance(issuance);
       dequeueBlindRequest(request.requestId);
     }

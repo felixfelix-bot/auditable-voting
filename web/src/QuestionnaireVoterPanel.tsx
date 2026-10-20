@@ -4,7 +4,7 @@ import { fetchQuestionnaireEvents, fetchQuestionnaireEventsWithFallback, getQues
 import { formatQuestionnaireStateLabel, formatQuestionnaireTokenStatusLabel, parseQuestionnaireResultSummaryEvent, selectLatestQuestionnaireDefinition, selectLatestQuestionnaireState } from "./questionnaireRuntime";
 import { buildSimpleNamespacedLocalStorageKey, loadSimpleActorState } from "./simpleLocalState";
 import { validateQuestionnaireResponsePayload, type QuestionnaireDefinition, type QuestionnaireQuestion, type QuestionnaireResponseAnswer, type QuestionnaireResponsePayload, type QuestionnaireResultSummary } from "./questionnaireProtocol";
-import { resolveLocalised } from "./i18n/resolveLocale";
+import { resolveLocalised, translatedText } from "./i18n/resolveLocale";
 import { useLocaleSafe, useTSafe } from "./i18n/LanguageContext";
 import TokenFingerprint from "./TokenFingerprint";
 import { deriveActorDisplayId } from "./actorDisplay";
@@ -1608,8 +1608,8 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
   return (
     <div className='simple-voter-card'>
       <h3 className='simple-voter-question'>{t("voterQuestionnaire")}</h3>
-      <p className='simple-voter-note'>{resolveLocalised(definition?.title ?? "", locale) || t("voterQuestionnaire")}</p>
-      <p className='simple-voter-note'>{resolveLocalised(definition?.description ?? "", locale) || t("voterOneTimeTokenNote")}</p>
+      <p className='simple-voter-note'>{resolveLocalised(translatedText(definition?.title ?? "", definition?.translations?.title), locale) || t("voterQuestionnaire")}</p>
+      <p className='simple-voter-note'>{resolveLocalised(translatedText(definition?.description ?? "", definition?.translations?.description), locale) || t("voterOneTimeTokenNote")}</p>
       <p className='simple-voter-note'>{definition?.responseVisibility === "private" ? t("voterAnswersEncrypted") : t("voterAnswersPublic")}</p>
       {responderMarkerNpub ? (
         <div className='simple-voter-action-row simple-voter-action-row-inline simple-voter-action-row-tight'>
@@ -1699,7 +1699,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
             if (!shouldShowQuestion(question, answeredMap, questionMap)) {
               return null;
             }
-            const questionPrompt = resolveLocalised(question.prompt, locale).trim() || t("voterUntitledQuestion");
+            const questionPrompt = resolveLocalised(translatedText(question.prompt, question.translations?.prompt), locale).trim() || t("voterUntitledQuestion");
             const requirementLabel = question.required ? t("statusRequired") : t("statusOptional");
             if (question.type === "yes_no") {
               const selected = answerState[question.questionId];
@@ -1761,7 +1761,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                           disabled={responseLocked}
                           onChange={() => setMultipleChoiceAnswer(question.questionId, option.optionId, question.multiSelect)}
                         />
-                        <span>{resolveLocalised(option.label, locale)}</span>
+                        <span>{resolveLocalised(translatedText(option.label, option.translations?.label), locale)}</span>
                       </label>
                     ))}
                   </div>
@@ -1823,7 +1823,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                                 <span className='simple-questionnaire-rank-selected'>
                                   <span className='simple-questionnaire-rank-selected-option'>
                                     <span className='simple-questionnaire-rank-inline-number'>{rankedIndex + 1}. </span>
-                                    <span>{resolveLocalised(option.label, locale)}</span>
+                                    <span>{resolveLocalised(translatedText(option.label, option.translations?.label), locale)}</span>
                                   </span>
                                   <span className='simple-questionnaire-rank-remove-prefix'>Remove as #{rankedIndex + 1}</span>
                                 </span>
@@ -1865,7 +1865,7 @@ export default function QuestionnaireVoterPanel(props: QuestionnaireVoterPanelPr
                             onPress={() => addRankedAnswer(question.questionId, option.optionId)}
                             isDisabled={responseLocked}
                           >
-                            <span className='simple-questionnaire-rank-add-option'>{resolveLocalised(option.label, locale)}</span>
+                            <span className='simple-questionnaire-rank-add-option'>{resolveLocalised(translatedText(option.label, option.translations?.label), locale)}</span>
                             <span className='simple-questionnaire-rank-add-prefix'>Add as #{ranked.length + 1}</span>
                           </UiButton>
                         ))}

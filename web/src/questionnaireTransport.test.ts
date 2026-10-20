@@ -4,6 +4,7 @@ import { evaluateQuestionnaireBlindAdmissions } from "./questionnaireTransport";
 import { parseQuestionnaireDefinitionEvent, publishQuestionnaireDefinition } from "./questionnaireNostr";
 import { QUESTIONNAIRE_RESPONSE_MODE_BLIND_TOKEN } from "./questionnaireProtocolConstants";
 import type { QuestionnaireDefinition } from "./questionnaireProtocol";
+import { resolveLocalised, translatedText } from "./i18n/resolveLocale";
 import {
   QUESTIONNAIRE_RESPONSE_BLIND_KIND,
   QUESTIONNAIRE_SUBMISSION_DECISION_KIND,
@@ -504,6 +505,17 @@ function localisedDefinition(): QuestionnaireDefinition {
 }
 
 describe("questionnaireTransport multilingual definition serialisation", () => {
+  it.each([null, [], { title: { en: "Wrong base", fr: ["bad"], ta: { length: 1 } } }])(
+    "parses malformed optional translations without rewriting the signed data: %j", (translations) => {
+      const raw = { ...localisedDefinition(), title: "English title", translations };
+      const parsed = parseQuestionnaireDefinitionEvent({ kind: 6420, content: JSON.stringify(raw) });
+      expect(parsed).not.toBeNull();
+      expect(parsed?.translations).toEqual(translations);
+      expect(resolveLocalised(translatedText(parsed?.title, parsed?.translations?.title), "fr")).toBe("English title");
+      expect(resolveLocalised(translatedText(parsed?.title, parsed?.translations?.title), "ta")).toBe("English title");
+    },
+  );
+
   beforeEach(() => {
     poolPublish.mockReset();
     queueNostrPublish.mockReset();
@@ -528,15 +540,14 @@ describe("questionnaireTransport multilingual definition serialisation", () => {
 
     // The event that goes on the wire carries every locale, not just English.
     const wire = JSON.parse(published.event.content) as QuestionnaireDefinition;
-    expect(wire.title).toEqual(definition.title);
-    expect(wire.description).toEqual(definition.description);
-    expect(wire.questions[0].prompt).toEqual(definition.questions[0].prompt);
-    expect(wire.questions[1].prompt).toEqual(definition.questions[1].prompt);
+    expect(wire.title).toBe("Term 1 feedback");
+    expect(wire.description).toBe("Tell us how term 1 went.");
+    expect(wire.translations).toEqual({ title: definition.title, description: definition.description });
+    expect(wire.questions[0].prompt).toBe("Did you attend?");
+    expect(wire.questions[0].translations?.prompt).toEqual(definition.questions[0].prompt);
+    expect(wire.questions[1].prompt).toBe("Which session?");
     expect((wire.questions[1] as { options: { label: unknown }[] }).options.map((option) => option.label))
-      .toEqual([
-        { en: "Morning", fr: "Matin", ta: "காலை" },
-        { en: "Afternoon", fr: "Après-midi", ta: "பிற்பகல்" },
-      ]);
+      .toEqual(["Morning", "Afternoon"]);
 
     const parsed = parseQuestionnaireDefinitionEvent({
       kind: published.event.kind,
@@ -545,18 +556,12 @@ describe("questionnaireTransport multilingual definition serialisation", () => {
 
     expect(parsed).not.toBeNull();
     expect(parsed?.questionnaireId).toBe("q_multi_language_2026");
-    expect(parsed?.title).toEqual(definition.title);
-    expect(parsed?.description).toEqual(definition.description);
-    expect(parsed?.questions[0].prompt).toEqual(definition.questions[0].prompt);
-    expect(parsed?.questions[1].prompt).toEqual(definition.questions[1].prompt);
-    expect((parsed?.questions[1] as { options: { label: unknown }[] }).options.map((option) => option.label))
-      .toEqual([
-        { en: "Morning", fr: "Matin", ta: "காலை" },
-        { en: "Afternoon", fr: "Après-midi", ta: "பிற்பகல்" },
-      ]);
+    expect(parsed).toMatchObject(wire);
+    expect((parsed?.questions[1] as { options: { translations: unknown }[] }).options.map((option) => option.translations))
+      .toEqual([{ label: { en: "Morning", fr: "Matin", ta: "காலை" } }, { label: { en: "Afternoon", fr: "Après-midi", ta: "பிற்பகல்" } }]);
   });
 
-  it("publishes a definition built with plain English strings as English-only localised text", async () => {
+  it("publishes English-only definition strings unchanged", async () => {
     const coordinatorNsec = nip19.nsecEncode(generateSecretKey());
     const legacy = {
       ...localisedDefinition(),
@@ -582,16 +587,17 @@ describe("questionnaireTransport multilingual definition serialisation", () => {
     });
 
     const wire = JSON.parse(published.event.content) as QuestionnaireDefinition;
-    expect(wire.title).toEqual({ en: "Term 1 feedback" });
-    expect(wire.description).toEqual({ en: "Tell us how term 1 went." });
-    expect(wire.questions[0].prompt).toEqual({ en: "Did you attend?" });
-    expect((wire.questions[1] as { options: { label: unknown }[] }).options[0].label).toEqual({ en: "Morning" });
+    expect(wire.title).toEqual("Term 1 feedback");
+    expect(wire.description).toEqual("Tell us how term 1 went.");
+    expect(wire.questions[0].prompt).toEqual("Did you attend?");
+    expect((wire.questions[1] as { options: { label: unknown }[] }).options[0].label).toEqual("Morning");
+    expect(wire.translations).toBeUndefined();
 
     // The in-memory definition the caller handed us is left untouched.
     expect(legacy.title).toBe("Term 1 feedback");
   });
 
-  it("parses a definition event written before multi-language support as English-only localised text", () => {
+  it("parses a legacy definition without rewriting signed strings", () => {
     const legacyContent = JSON.stringify({
       ...localisedDefinition(),
       title: "Term 1 feedback",
@@ -612,9 +618,9 @@ describe("questionnaireTransport multilingual definition serialisation", () => {
     const parsed = parseQuestionnaireDefinitionEvent({ kind: 6420, content: legacyContent });
 
     expect(parsed).not.toBeNull();
-    expect(parsed?.title).toEqual({ en: "Term 1 feedback" });
-    expect(parsed?.description).toEqual({ en: "Tell us how term 1 went." });
-    expect(parsed?.questions[0].prompt).toEqual({ en: "Did you attend?" });
-    expect((parsed?.questions[1] as { options: { label: unknown }[] }).options[0].label).toEqual({ en: "Morning" });
+    expect(parsed?.title).toEqual("Term 1 feedback");
+    expect(parsed?.description).toEqual("Tell us how term 1 went.");
+    expect(parsed?.questions[0].prompt).toEqual("Did you attend?");
+    expect((parsed?.questions[1] as { options: { label: unknown }[] }).options[0].label).toEqual("Morning");
   });
 });
